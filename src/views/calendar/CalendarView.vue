@@ -59,6 +59,32 @@ const filteredSchedules = computed(() => {
   return schedules.value.filter(s => s.teamId === selectedTeamId.value)
 })
 
+function formatYmd(d: Date) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/** RPC schedule 조회 구간 (로컬 날짜 YYYY-MM-DD) */
+function getRangeForView(view: ViewType, anchor: Date): { startDate: string; endDate: string } {
+  if (view === 'day') {
+    const d = formatYmd(anchor)
+    return { startDate: d, endDate: d }
+  }
+  if (view === 'week') {
+    const weekStart = new Date(anchor)
+    const dow = weekStart.getDay()
+    weekStart.setDate(weekStart.getDate() - dow)
+    const weekEnd = new Date(weekStart)
+    weekEnd.setDate(weekEnd.getDate() + 6)
+    return { startDate: formatYmd(weekStart), endDate: formatYmd(weekEnd) }
+  }
+  const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1)
+  const monthEnd = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0)
+  return { startDate: formatYmd(monthStart), endDate: formatYmd(monthEnd) }
+}
+
 // Methods
 function getWeekStart(date: Date): Date {
   const d = new Date(date)
@@ -131,19 +157,16 @@ async function loadTeams() {
 
 async function loadSchedules() {
   isLoading.value = true
-  const result = await scheduleApi.getSchedules({
-    year: currentYear.value,
-    month: currentMonth.value + 1,
-    teamId: selectedTeamId.value || undefined
-  })
+  const { startDate, endDate } = getRangeForView(viewType.value, currentDate.value)
+  const teamId = selectedTeamId.value ? Number(selectedTeamId.value) : null
+  const result = await scheduleApi.loadCalendarSchedules({ startDate, endDate, teamId })
   if (result.success && result.data) {
     schedules.value = result.data
   }
   isLoading.value = false
 }
 
-// Watch for date/team changes
-watch([currentDate, selectedTeamId], () => {
+watch([currentDate, selectedTeamId, viewType], () => {
   loadSchedules()
 })
 
