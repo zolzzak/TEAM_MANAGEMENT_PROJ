@@ -21,7 +21,14 @@ import type {
   ScheduleDetailData,
   ScheduleUpdateData,
   RecurrenceType,
-  ScheduleUpdateScope
+  ScheduleUpdateScope,
+  NotificationListData,
+  NotificationMarkReadData,
+  NotificationMarkAllReadData,
+  NotificationItem,
+  UserMeData,
+  UserProfileUpdateData,
+  UserSettingsData
 } from '@/types'
 
 // API 기본 URL - 환경변수로 설정 가능
@@ -1025,5 +1032,190 @@ export const scheduleApi = {
     const params: Record<string, unknown> = { scheduleId }
     if (deleteScope) params.deleteScope = deleteScope
     return rpcCall<null>('schedule.delete', params, { accessToken: getStoredAccessToken() })
+  }
+}
+
+// —— Notification mock
+let mockNotifications: NotificationItem[] = [
+  {
+    notificationId: 55,
+    type: 'SCHEDULE_INVITE',
+    message: "김팀장님이 '스프린트 회의'에 초대했습니다.",
+    isRead: false,
+    relatedScheduleId: 100,
+    createdAt: '2026-05-05T09:00:00Z'
+  },
+  {
+    notificationId: 54,
+    type: 'PARTICIPANT_RESPONSE',
+    message: '이개발님이 일정 초대를 수락했습니다.',
+    isRead: false,
+    relatedScheduleId: 100,
+    createdAt: '2026-05-04T08:00:00Z'
+  },
+  {
+    notificationId: 53,
+    type: 'MEMBER_KICK',
+    message: '팀에서 탈퇴되었습니다.',
+    isRead: true,
+    relatedScheduleId: null,
+    createdAt: '2026-05-03T12:00:00Z'
+  }
+]
+
+function mockNotificationUnreadCount() {
+  return mockNotifications.filter(n => !n.isRead).length
+}
+
+/** 알림 RPC */
+export const notificationApi = {
+  async list(opts?: {
+    unreadOnly?: boolean
+    page?: number
+    size?: number
+  }): Promise<ApiResponse<NotificationListData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY / 4)
+      const pageNum = opts?.page ?? 0
+      const size = opts?.size ?? 20
+      let rows = [...mockNotifications].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )
+      if (opts?.unreadOnly) rows = rows.filter(r => !r.isRead)
+      const totalElements = rows.length
+      const totalPages = Math.max(1, Math.ceil(totalElements / size))
+      const slice = rows.slice(pageNum * size, pageNum * size + size)
+      return {
+        success: true,
+        data: {
+          unreadCount: mockNotificationUnreadCount(),
+          notifications: slice,
+          page: {
+            number: pageNum,
+            totalElements,
+            totalPages
+          }
+        }
+      }
+    }
+    const params: Record<string, unknown> = {}
+    if (opts?.unreadOnly !== undefined) params.unreadOnly = opts.unreadOnly
+    if (opts?.page !== undefined) params.page = opts.page
+    if (opts?.size !== undefined) params.size = opts.size
+    return rpcCall<NotificationListData>('notification.list', params, {
+      accessToken: getStoredAccessToken()
+    })
+  },
+
+  async markAsRead(notificationId: number): Promise<ApiResponse<NotificationMarkReadData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY / 6)
+      const n = mockNotifications.find(x => x.notificationId === notificationId)
+      if (!n) {
+        return {
+          success: false,
+          message: '알림을 찾을 수 없습니다',
+          error: { code: 'E004', message: '알림을 찾을 수 없습니다' }
+        }
+      }
+      n.isRead = true
+      return { success: true, data: { notificationId, isRead: true } }
+    }
+    return rpcCall<NotificationMarkReadData>(
+      'notification.markAsRead',
+      { notificationId },
+      { accessToken: getStoredAccessToken() }
+    )
+  },
+
+  async markAllAsRead(): Promise<ApiResponse<NotificationMarkAllReadData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY / 4)
+      let c = 0
+      mockNotifications.forEach(n => {
+        if (!n.isRead) {
+          n.isRead = true
+          c++
+        }
+      })
+      return { success: true, data: { updatedCount: c } }
+    }
+    return rpcCall<NotificationMarkAllReadData>(
+      'notification.markAllAsRead',
+      {},
+      { accessToken: getStoredAccessToken() }
+    )
+  }
+}
+
+// —— User mock (프로필 / 설정)
+let mockUserMe: UserMeData = {
+  userId: 1,
+  email: mockUsers[0].email,
+  name: mockUsers[0].name,
+  profileImageUrl: null,
+  provider: 'LOCAL',
+  createdAt: mockUsers[0].createdAt || new Date().toISOString()
+}
+
+let mockUserSettings: UserSettingsData = {
+  emailNotification: true,
+  inAppNotification: true,
+  defaultCalendarView: 'month',
+  timezone: 'Asia/Seoul',
+  language: 'ko'
+}
+
+export const userApi = {
+  async getMe(): Promise<ApiResponse<UserMeData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY / 6)
+      return { success: true, data: { ...mockUserMe } }
+    }
+    return rpcCall<UserMeData>('user.getMe', {}, { accessToken: getStoredAccessToken() })
+  },
+
+  async updateProfile(patch: {
+    name?: string
+    profileImageUrl?: string | null
+  }): Promise<ApiResponse<UserProfileUpdateData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY / 4)
+      if (patch.name !== undefined) mockUserMe.name = patch.name
+      if (patch.profileImageUrl !== undefined) mockUserMe.profileImageUrl = patch.profileImageUrl
+      return {
+        success: true,
+        data: {
+          userId: mockUserMe.userId,
+          name: mockUserMe.name,
+          profileImageUrl: mockUserMe.profileImageUrl
+        }
+      }
+    }
+    const params: Record<string, unknown> = {}
+    if (patch.name !== undefined) params.name = patch.name
+    if (patch.profileImageUrl !== undefined) params.profileImageUrl = patch.profileImageUrl
+    return rpcCall<UserProfileUpdateData>('user.updateProfile', params, {
+      accessToken: getStoredAccessToken()
+    })
+  },
+
+  async getSettings(): Promise<ApiResponse<UserSettingsData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY / 6)
+      return { success: true, data: { ...mockUserSettings } }
+    }
+    return rpcCall<UserSettingsData>('user.getSettings', {}, { accessToken: getStoredAccessToken() })
+  },
+
+  async updateSettings(patch: Partial<UserSettingsData>): Promise<ApiResponse<UserSettingsData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY / 4)
+      mockUserSettings = { ...mockUserSettings, ...patch }
+      return { success: true, data: { ...mockUserSettings } }
+    }
+    return rpcCall<UserSettingsData>('user.updateSettings', patch, {
+      accessToken: getStoredAccessToken()
+    })
   }
 }

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, onMounted, provide } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Calendar, Users, Bell, Settings, LogOut, Menu, X, Plus } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
-import { authApi } from '@/services/api'
+import { authApi, notificationApi, userApi } from '@/services/api'
 
 const router = useRouter()
 const route = useRoute()
@@ -11,18 +11,41 @@ const route = useRoute()
 const isSidebarOpen = ref(true)
 const isMobileSidebarOpen = ref(false)
 
-// Mock 사용자 데이터 (나중에 store에서 가져올 예정)
 const currentUser = ref({
   name: '홍길동',
   email: 'test@example.com'
 })
 
-const navigation = [
+const unreadCount = ref(0)
+
+const navigation = computed(() => [
   { name: '내 일정', href: '/dashboard', icon: Calendar },
   { name: '팀 관리', href: '/teams', icon: Users },
-  { name: '알림', href: '/notifications', icon: Bell, badge: 3 },
-  { name: '설정', href: '/settings', icon: Settings },
-]
+  {
+    name: '알림',
+    href: '/notifications',
+    icon: Bell,
+    badge: unreadCount.value > 0 ? unreadCount.value : undefined
+  },
+  { name: '설정', href: '/settings', icon: Settings }
+])
+
+async function refreshNotificationBadge() {
+  const result = await notificationApi.list({ page: 0, size: 1 })
+  if (result.success && result.data) {
+    unreadCount.value = result.data.unreadCount
+  }
+}
+
+provide('refreshNotificationBadge', refreshNotificationBadge)
+
+onMounted(async () => {
+  const me = await userApi.getMe()
+  if (me.success && me.data) {
+    currentUser.value = { name: me.data.name, email: me.data.email }
+  }
+  await refreshNotificationBadge()
+})
 
 const isActive = (href: string) => {
   if (href === '/dashboard') {

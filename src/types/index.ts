@@ -232,3 +232,69 @@ export interface ScheduleParticipant {
   userId: string
   user: User
 }
+
+/** Notification RPC */
+export type NotificationType =
+  | 'SCHEDULE_INVITE'
+  | 'SCHEDULE_UPDATE'
+  | 'SCHEDULE_DELETE'
+  | 'MEMBER_KICK'
+  | 'PARTICIPANT_RESPONSE'
+
+export interface NotificationItem {
+  notificationId: number
+  type: NotificationType
+  message: string
+  isRead: boolean
+  relatedScheduleId?: number | null
+  createdAt: string
+}
+
+export interface NotificationPageInfo {
+  number: number
+  totalElements: number
+  totalPages: number
+}
+
+export interface NotificationListData {
+  unreadCount: number
+  notifications: NotificationItem[]
+  page: NotificationPageInfo
+}
+
+export interface NotificationMarkReadData {
+  notificationId: number
+  isRead: boolean
+}
+
+export interface NotificationMarkAllReadData {
+  updatedCount: number
+}
+
+/** User RPC — 프로필 / 설정 */
+export type AuthProviderType = 'LOCAL' | 'GOOGLE'
+
+export interface UserMeData {
+  userId: number
+  email: string
+  name: string
+  profileImageUrl: string | null
+  provider: AuthProviderType
+  createdAt: string
+}
+
+export interface UserProfileUpdateData {
+  userId: number
+  name: string
+  profileImageUrl: string | null
+}
+
+export type CalendarDefaultViewPref = 'month' | 'week' | 'day'
+
+export interface UserSettingsData {
+  emailNotification: boolean
+  inAppNotification: boolean
+  defaultCalendarView: CalendarDefaultViewPref
+  timezone: string
+  language: string
+}
