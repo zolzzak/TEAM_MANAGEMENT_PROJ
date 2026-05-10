@@ -5,9 +5,16 @@ import type {
   RegisterRequest,
   RpcErrorBody,
   User,
-  Team,
-  TeamMember,
-  TeamRole
+  TeamListItem,
+  TeamCreateData,
+  TeamDetailData,
+  TeamUpdateData,
+  TeamInviteCodeData,
+  TeamJoinData,
+  TeamChangeMemberRoleData,
+  TeamRole,
+  TeamMemberRpc,
+  Schedule
 } from '@/types'
 
 // API 기본 URL - 환경변수로 설정 가능
@@ -39,6 +46,20 @@ const mockPasswords: Record<string, string> = {
 
 // 지연 시뮬레이션 헬퍼
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+function getStoredAccessToken(): string | null {
+  if (typeof localStorage === 'undefined') return null
+  return localStorage.getItem('token')
+}
+
+function generateInviteCodeString(length = 8): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  let code = ''
+  for (let i = 0; i < length; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length))
+  }
+  return code
+}
 
 /** POST /api/rpc — 스펙: HTTP 200 + body.success 로 성공/실패 구분 */
 async function rpcCall<T>(
@@ -93,41 +114,6 @@ async function rpcCall<T>(
     return {
       success: false,
       message: '알 수 없는 응답 형식입니다'
-    }
-  } catch {
-    return {
-      success: false,
-      message: '서버와 통신할 수 없습니다'
-    }
-  }
-}
-
-// HTTP 요청 헬퍼 (TEAM/SCHEDULE 등 레거시 REST — 추후 RPC로 통합)
-async function fetchApi<T>(
-  endpoint: string,
-  options?: RequestInit
-): Promise<ApiResponse<T>> {
-  try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options?.headers
-      }
-    })
-
-    const data = await response.json()
-
-    if (!response.ok) {
-      return {
-        success: false,
-        message: data.message || '요청 처리에 실패했습니다'
-      }
-    }
-
-    return {
-      success: true,
-      data
     }
   } catch {
     return {
@@ -302,337 +288,392 @@ export const authApi = {
   }
 }
 
-// Mock 팀 데이터
-const mockTeams: (Team & { members: TeamMember[] })[] = [
+type MockMember = {
+  userId: number
+  name: string
+  email: string
+  profileImageUrl: string | null
+  role: TeamRole
+  joinedAt: string
+}
+
+type MockTeam = {
+  teamId: number
+  name: string
+  description?: string
+  inviteCode: string
+  createdAt: string
+  members: MockMember[]
+}
+
+/** Mock 팀 저장소 (RPC team.* 와 동일 도메인 모델) */
+let mockTeamStore: MockTeam[] = [
   {
-    id: '1',
+    teamId: 1,
     name: '개발팀',
     description: '프로덕트 개발을 담당하는 팀입니다',
+    inviteCode: 'ABC123XY',
     createdAt: new Date().toISOString(),
-    ownerId: '1',
     members: [
       {
-        id: 'm1',
-        userId: '1',
-        teamId: '1',
-        role: 'Admin',
-        user: mockUsers[0]
+        userId: 1,
+        name: '홍길동',
+        email: 'test@example.com',
+        profileImageUrl: null,
+        role: 'OWNER',
+        joinedAt: new Date().toISOString()
       }
     ]
   }
 ]
 
-// Mock 초대 코드
-const mockInviteCodes: Record<string, { teamId: string; code: string; createdAt: string }> = {
-  '1': { teamId: '1', code: 'DEV2024ABC', createdAt: new Date().toISOString() }
+const getCurrentUserId = (): number => 1
+
+function findMockTeam(teamId: number): MockTeam | undefined {
+  return mockTeamStore.find(t => t.teamId === teamId)
 }
 
-// 현재 로그인 사용자 ID (Mock)
-const getCurrentUserId = () => '1'
-
-// 랜덤 초대 코드 생성
-const generateRandomCode = () => {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-  let code = ''
-  for (let i = 0; i < 10; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length))
+function toDetailData(team: MockTeam, myUserId: number): TeamDetailData {
+  const me = team.members.find(m => m.userId === myUserId)
+  const members: TeamMemberRpc[] = team.members.map(m => ({
+    userId: m.userId,
+    name: m.name,
+    email: m.email,
+    profileImageUrl: m.profileImageUrl,
+    role: m.role,
+    joinedAt: m.joinedAt
+  }))
+  return {
+    teamId: team.teamId,
+    name: team.name,
+    description: team.description,
+    inviteCode: team.inviteCode,
+    myRole: me?.role ?? 'MEMBER',
+    members
   }
-  return code
 }
 
-// 팀 관련 API
+/** 팀 관련 API — RPC action: team.* */
 export const teamApi = {
-  /**
-   * 내가 속한 팀 목록 조회
-   */
-  async getMyTeams(): Promise<ApiResponse<(Team & { members: TeamMember[]; role: TeamRole })[]>> {
+  async getMyTeams(): Promise<ApiResponse<TeamListItem[]>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-      
-      const userId = getCurrentUserId()
-      const myTeams = mockTeams
-        .filter(team => team.members.some(m => m.userId === userId))
-        .map(team => {
-          const member = team.members.find(m => m.userId === userId)
+      const uid = getCurrentUserId()
+      const list: TeamListItem[] = mockTeamStore
+        .filter(t => t.members.some(m => m.userId === uid))
+        .map(t => {
+          const me = t.members.find(m => m.userId === uid)!
           return {
-            ...team,
-            role: member?.role || 'User' as TeamRole
+            teamId: t.teamId,
+            name: t.name,
+            description: t.description,
+            memberCount: t.members.length,
+            myRole: me.role,
+            createdAt: t.createdAt
           }
         })
-      
-      return {
-        success: true,
-        data: myTeams
-      }
+      return { success: true, data: list }
     }
-    
-    return fetchApi('/api/teams')
+
+    return rpcCall<TeamListItem[]>('team.getMyList', {}, { accessToken: getStoredAccessToken() })
   },
 
-  /**
-   * 팀 상세 조회
-   */
-  async getTeamById(teamId: string): Promise<ApiResponse<{ team: Team; members: TeamMember[]; currentUserRole: TeamRole }>> {
+  async getTeamById(teamId: string): Promise<ApiResponse<TeamDetailData>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-      
-      const team = mockTeams.find(t => t.id === teamId)
+      const id = Number(teamId)
+      const team = findMockTeam(id)
       if (!team) {
-        return { success: false, message: '팀을 찾을 수 없습니다' }
+        return { success: false, message: '팀을 찾을 수 없습니다', error: { code: 'E004', message: '팀을 찾을 수 없습니다' } }
       }
-      
-      const userId = getCurrentUserId()
-      const currentMember = team.members.find(m => m.userId === userId)
-      
       return {
         success: true,
-        data: {
-          team: { id: team.id, name: team.name, description: team.description, createdAt: team.createdAt, ownerId: team.ownerId },
-          members: team.members,
-          currentUserRole: currentMember?.role || 'User'
-        }
+        data: toDetailData(team, getCurrentUserId())
       }
     }
-    
-    return fetchApi(`/api/teams/${teamId}`)
+
+    return rpcCall<TeamDetailData>('team.getDetail', { teamId: Number(teamId) }, { accessToken: getStoredAccessToken() })
   },
 
-  /**
-   * 팀 생성
-   */
-  async createTeam(name: string, description?: string): Promise<ApiResponse<Team>> {
+  async createTeam(name: string, description?: string): Promise<ApiResponse<TeamCreateData>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-      
-      const userId = getCurrentUserId()
-      const user = mockUsers.find(u => u.id === userId)
-      
-      const newTeam: Team & { members: TeamMember[] } = {
-        id: String(mockTeams.length + 1),
+      const uid = getCurrentUserId()
+      const u = mockUsers.find(x => Number(x.id) === uid)
+      if (!u) {
+        return { success: false, message: '사용자를 찾을 수 없습니다' }
+      }
+      const nextId = Math.max(0, ...mockTeamStore.map(t => t.teamId)) + 1
+      const now = new Date().toISOString()
+      const code = generateInviteCodeString(8)
+      const newTeam: MockTeam = {
+        teamId: nextId,
         name,
         description,
-        createdAt: new Date().toISOString(),
-        ownerId: userId,
+        inviteCode: code,
+        createdAt: now,
         members: [
           {
-            id: `m${Date.now()}`,
-            userId,
-            teamId: String(mockTeams.length + 1),
-            role: 'Admin',
-            user: user!
+            userId: uid,
+            name: u.name,
+            email: u.email,
+            profileImageUrl: null,
+            role: 'OWNER',
+            joinedAt: now
           }
         ]
       }
-      
-      mockTeams.push(newTeam)
-      
+      mockTeamStore.push(newTeam)
       return {
         success: true,
-        data: newTeam
+        data: {
+          teamId: newTeam.teamId,
+          name: newTeam.name,
+          description: newTeam.description,
+          inviteCode: newTeam.inviteCode,
+          memberCount: 1,
+          myRole: 'OWNER',
+          createdAt: newTeam.createdAt
+        }
       }
     }
-    
-    return fetchApi('/api/teams', {
-      method: 'POST',
-      body: JSON.stringify({ name, description })
-    })
+
+    return rpcCall<TeamCreateData>(
+      'team.create',
+      {
+        name,
+        ...(description !== undefined && description !== '' ? { description } : {})
+      },
+      { accessToken: getStoredAccessToken() }
+    )
   },
 
-  /**
-   * 팀 정보 수정 (Admin만)
-   */
-  async updateTeam(teamId: string, name: string, description?: string): Promise<ApiResponse<Team>> {
+  async updateTeam(teamId: string, name: string, description?: string): Promise<ApiResponse<TeamUpdateData>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-      
-      const team = mockTeams.find(t => t.id === teamId)
+      const team = findMockTeam(Number(teamId))
       if (!team) {
         return { success: false, message: '팀을 찾을 수 없습니다' }
       }
-      
+      const me = team.members.find(m => m.userId === getCurrentUserId())
+      if (me?.role === 'MEMBER') {
+        return {
+          success: false,
+          message: '권한이 없습니다',
+          error: { code: 'E003', message: '권한이 없습니다' }
+        }
+      }
       team.name = name
       team.description = description
-      
       return {
         success: true,
-        data: team
+        data: {
+          teamId: team.teamId,
+          name: team.name,
+          description: team.description
+        }
       }
     }
-    
-    return fetchApi(`/api/teams/${teamId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ name, description })
-    })
+
+    const params: Record<string, unknown> = {
+      teamId: Number(teamId),
+      name,
+      ...(description !== undefined ? { description } : {})
+    }
+    return rpcCall<TeamUpdateData>('team.update', params, { accessToken: getStoredAccessToken() })
   },
 
-  /**
-   * 팀 삭제 (Admin만)
-   */
-  async deleteTeam(teamId: string): Promise<ApiResponse<void>> {
+  async deleteTeam(teamId: string): Promise<ApiResponse<null>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-      
-      const index = mockTeams.findIndex(t => t.id === teamId)
-      if (index === -1) {
+      const id = Number(teamId)
+      const idx = mockTeamStore.findIndex(t => t.teamId === id)
+      if (idx === -1) {
         return { success: false, message: '팀을 찾을 수 없습니다' }
       }
-      
-      mockTeams.splice(index, 1)
-      
-      return { success: true }
+      mockTeamStore.splice(idx, 1)
+      return { success: true, data: null }
     }
-    
-    return fetchApi(`/api/teams/${teamId}`, { method: 'DELETE' })
+
+    return rpcCall<null>('team.delete', { teamId: Number(teamId) }, { accessToken: getStoredAccessToken() })
   },
 
-  /**
-   * 초대 코드 생성 (Admin만)
-   */
-  async generateInviteCode(teamId: string): Promise<ApiResponse<{ code: string }>> {
+  async generateInviteCode(teamId: string): Promise<ApiResponse<TeamInviteCodeData>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-      
-      const code = generateRandomCode()
-      mockInviteCodes[teamId] = {
-        teamId,
-        code,
-        createdAt: new Date().toISOString()
-      }
-      
-      return {
-        success: true,
-        data: { code }
-      }
-    }
-    
-    return fetchApi(`/api/teams/${teamId}/invite-code`, { method: 'POST' })
-  },
-
-  /**
-   * 초대 코드로 팀 가입
-   */
-  async joinWithCode(code: string): Promise<ApiResponse<Team>> {
-    if (USE_MOCK) {
-      await delay(MOCK_DELAY)
-      
-      const inviteEntry = Object.values(mockInviteCodes).find(inv => inv.code === code)
-      if (!inviteEntry) {
-        return { success: false, message: '유효하지 않은 초대 코드입니다' }
-      }
-      
-      const team = mockTeams.find(t => t.id === inviteEntry.teamId)
+      const team = findMockTeam(Number(teamId))
       if (!team) {
         return { success: false, message: '팀을 찾을 수 없습니다' }
       }
-      
-      const userId = getCurrentUserId()
-      const existingMember = team.members.find(m => m.userId === userId)
-      if (existingMember) {
-        return { success: false, message: '이미 이 팀의 멤버입니다' }
+      team.inviteCode = generateInviteCodeString(8)
+      return {
+        success: true,
+        data: { teamId: team.teamId, inviteCode: team.inviteCode }
       }
-      
-      const user = mockUsers.find(u => u.id === userId)
+    }
+
+    return rpcCall<TeamInviteCodeData>(
+      'team.regenerateInviteCode',
+      { teamId: Number(teamId) },
+      { accessToken: getStoredAccessToken() }
+    )
+  },
+
+  async joinWithCode(inviteCode: string): Promise<ApiResponse<TeamJoinData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY)
+      const trimmed = inviteCode.trim().toUpperCase()
+      const team = mockTeamStore.find(t => t.inviteCode.toUpperCase() === trimmed)
+      if (!team) {
+        return {
+          success: false,
+          message: '유효하지 않은 초대 코드입니다',
+          error: { code: 'E007', message: '유효하지 않은 초대 코드입니다' }
+        }
+      }
+      const uid = getCurrentUserId()
+      if (team.members.some(m => m.userId === uid)) {
+        return {
+          success: false,
+          message: '이미 가입된 팀입니다',
+          error: { code: 'E005', message: '이미 가입된 팀입니다' }
+        }
+      }
+      const user = mockUsers.find(u => Number(u.id) === uid)
+      if (!user) {
+        return { success: false, message: '사용자를 찾을 수 없습니다' }
+      }
       team.members.push({
-        id: `m${Date.now()}`,
-        userId,
-        teamId: team.id,
-        role: 'User',
-        user: user!
+        userId: uid,
+        name: user.name,
+        email: user.email,
+        profileImageUrl: null,
+        role: 'MEMBER',
+        joinedAt: new Date().toISOString()
       })
-      
       return {
         success: true,
-        data: team
+        data: {
+          teamId: team.teamId,
+          name: team.name,
+          myRole: 'MEMBER'
+        }
       }
     }
-    
-    return fetchApi('/api/teams/join', {
-      method: 'POST',
-      body: JSON.stringify({ code })
-    })
+
+    return rpcCall<TeamJoinData>('team.join', { inviteCode: inviteCode.trim() }, { accessToken: getStoredAccessToken() })
   },
 
-  /**
-   * 팀 탈퇴
-   */
-  async leaveTeam(teamId: string): Promise<ApiResponse<void>> {
+  async leaveTeam(teamId: string): Promise<ApiResponse<null>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-      
-      const team = mockTeams.find(t => t.id === teamId)
+      const team = findMockTeam(Number(teamId))
       if (!team) {
         return { success: false, message: '팀을 찾을 수 없습니다' }
       }
-      
-      const userId = getCurrentUserId()
-      const memberIndex = team.members.findIndex(m => m.userId === userId)
-      if (memberIndex === -1) {
+      const uid = getCurrentUserId()
+      const member = team.members.find(m => m.userId === uid)
+      if (!member) {
         return { success: false, message: '팀 멤버가 아닙니다' }
       }
-      
-      team.members.splice(memberIndex, 1)
-      
-      return { success: true }
+      if (member.role === 'OWNER') {
+        return {
+          success: false,
+          message: '역할 위임 후 탈퇴해 주세요',
+          error: { code: 'E003', message: '역할 위임 후 탈퇴해 주세요' }
+        }
+      }
+      const idx = team.members.findIndex(m => m.userId === uid)
+      team.members.splice(idx, 1)
+      return { success: true, data: null }
     }
-    
-    return fetchApi(`/api/teams/${teamId}/leave`, { method: 'POST' })
+
+    return rpcCall<null>('team.leave', { teamId: Number(teamId) }, { accessToken: getStoredAccessToken() })
   },
 
-  /**
-   * 멤버 역할 변경 (Admin만)
-   */
-  async changeMemberRole(teamId: string, userId: string, newRole: TeamRole): Promise<ApiResponse<void>> {
+  async changeMemberRole(
+    teamId: string,
+    targetUserId: string | number,
+    newRole: Extract<TeamRole, 'ADMIN' | 'MEMBER'>
+  ): Promise<ApiResponse<TeamChangeMemberRoleData>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-      
-      const team = mockTeams.find(t => t.id === teamId)
+      const team = findMockTeam(Number(teamId))
       if (!team) {
         return { success: false, message: '팀을 찾을 수 없습니다' }
       }
-      
-      const member = team.members.find(m => m.userId === userId)
+      const tid = typeof targetUserId === 'string' ? Number(targetUserId) : targetUserId
+      const member = team.members.find(m => m.userId === tid)
       if (!member) {
         return { success: false, message: '멤버를 찾을 수 없습니다' }
       }
-      
+      if (member.role === 'OWNER') {
+        return {
+          success: false,
+          message: '권한이 없습니다',
+          error: { code: 'E003', message: '권한이 없습니다' }
+        }
+      }
       member.role = newRole
-      
-      return { success: true }
+      return {
+        success: true,
+        data: { userId: tid, role: newRole }
+      }
     }
-    
-    return fetchApi(`/api/teams/${teamId}/members/${userId}/role`, {
-      method: 'PUT',
-      body: JSON.stringify({ role: newRole })
-    })
+
+    return rpcCall<TeamChangeMemberRoleData>(
+      'team.changeMemberRole',
+      {
+        teamId: Number(teamId),
+        targetUserId: typeof targetUserId === 'string' ? Number(targetUserId) : targetUserId,
+        role: newRole
+      },
+      { accessToken: getStoredAccessToken() }
+    )
   },
 
-  /**
-   * 멤버 제거 (Admin만)
-   */
-  async removeMember(teamId: string, userId: string): Promise<ApiResponse<void>> {
+  async kickMember(teamId: string, targetUserId: string | number): Promise<ApiResponse<null>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-      
-      const team = mockTeams.find(t => t.id === teamId)
+      const team = findMockTeam(Number(teamId))
       if (!team) {
         return { success: false, message: '팀을 찾을 수 없습니다' }
       }
-      
-      const memberIndex = team.members.findIndex(m => m.userId === userId)
-      if (memberIndex === -1) {
+      const tid = typeof targetUserId === 'string' ? Number(targetUserId) : targetUserId
+      const member = team.members.find(m => m.userId === tid)
+      if (!member) {
         return { success: false, message: '멤버를 찾을 수 없습니다' }
       }
-      
-      team.members.splice(memberIndex, 1)
-      
-      return { success: true }
+      if (member.role === 'OWNER') {
+        return {
+          success: false,
+          message: '권한이 없습니다',
+          error: { code: 'E003', message: '권한이 없습니다' }
+        }
+      }
+      const idx = team.members.findIndex(m => m.userId === tid)
+      team.members.splice(idx, 1)
+      return { success: true, data: null }
     }
-    
-    return fetchApi(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE' })
+
+    return rpcCall<null>(
+      'team.kickMember',
+      {
+        teamId: Number(teamId),
+        targetUserId: typeof targetUserId === 'string' ? Number(targetUserId) : targetUserId
+      },
+      { accessToken: getStoredAccessToken() }
+    )
   }
 }
 
-// 일정 관련 API (추후 구현)
+// 일정 관련 API (SCHEDULE RPC 스펙 연동 시 확장)
 export const scheduleApi = {
-  // TODO: 일정 CRUD API 구현
+  async getSchedules(_params: {
+    year: number
+    month: number
+    teamId?: string
+  }): Promise<ApiResponse<Schedule[]>> {
+    return { success: true, data: [] }
+  }
 }

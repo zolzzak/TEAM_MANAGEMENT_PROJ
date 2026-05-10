@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { ChevronLeft, ChevronRight, Plus, Filter } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Plus } from 'lucide-vue-next'
 import DashboardLayout from '@/components/layout/DashboardLayout.vue'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
@@ -11,18 +10,15 @@ import DayView from '@/components/calendar/DayView.vue'
 import ScheduleModal from '@/components/calendar/ScheduleModal.vue'
 import ScheduleDetailModal from '@/components/calendar/ScheduleDetailModal.vue'
 import { scheduleApi, teamApi } from '@/services/api'
-import type { Schedule, Team } from '@/types'
+import type { Schedule, TeamListItem } from '@/types'
 
 type ViewType = 'month' | 'week' | 'day'
-
-const route = useRoute()
-const router = useRouter()
 
 // State
 const currentDate = ref(new Date())
 const viewType = ref<ViewType>('month')
 const schedules = ref<Schedule[]>([])
-const teams = ref<(Team & { role: string })[]>([])
+const teams = ref<TeamListItem[]>([])
 const selectedTeamId = ref<string | null>(null)
 const isLoading = ref(true)
 
@@ -196,7 +192,7 @@ onMounted(async () => {
               class="h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option :value="null">모든 팀</option>
-              <option v-for="team in teams" :key="team.id" :value="team.id">
+              <option v-for="team in teams" :key="team.teamId" :value="String(team.teamId)">
                 {{ team.name }}
               </option>
             </select>
@@ -297,7 +293,7 @@ onMounted(async () => {
               </p>
             </div>
             <Badge variant="secondary" size="sm">
-              {{ teams.find(t => t.id === schedule.teamId)?.name || '개인' }}
+              {{ teams.find(t => String(t.teamId) === schedule.teamId)?.name || '개인' }}
             </Badge>
           </button>
         </div>

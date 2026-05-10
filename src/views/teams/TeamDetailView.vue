@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Users, Settings, UserPlus, Crown, MoreVertical, Trash2, UserMinus, Shield, User, Copy, Check, RefreshCw } from 'lucide-vue-next'
+import { ArrowLeft, Users, Settings, UserPlus, Crown, MoreVertical, UserMinus, Shield, User, Copy, Check, RefreshCw } from 'lucide-vue-next'
 import DashboardLayout from '@/components/layout/DashboardLayout.vue'
 import Button from '@/components/ui/Button.vue'
 import Card from '@/components/ui/Card.vue'
@@ -13,7 +13,7 @@ import Input from '@/components/ui/Input.vue'
 import Label from '@/components/ui/Label.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Avatar from '@/components/ui/Avatar.vue'
-import type { Team, TeamMember } from '@/types'
+import type { TeamDetailData, TeamMemberRpc, TeamRole } from '@/types'
 import { teamApi } from '@/services/api'
 
 const route = useRoute()
@@ -21,10 +21,18 @@ const router = useRouter()
 
 const teamId = computed(() => route.params.id as string)
 
+function roleLabel(role: TeamRole) {
+  if (role === 'OWNER') return '소유자'
+  if (role === 'ADMIN') return '관리자'
+  return '멤버'
+}
+
+function canManageMembers(myRole: TeamRole) {
+  return myRole === 'OWNER' || myRole === 'ADMIN'
+}
+
 // State
-const team = ref<Team | null>(null)
-const members = ref<TeamMember[]>([])
-const currentUserRole = ref<'Admin' | 'User'>('User')
+const detail = ref<TeamDetailData | null>(null)
 const isLoading = ref(true)
 
 // Modals
@@ -37,7 +45,7 @@ const showRemoveMemberModal = ref(false)
 const editForm = ref({ name: '', description: '' })
 const inviteCode = ref('')
 const copiedCode = ref(false)
-const selectedMember = ref<TeamMember | null>(null)
+const selectedMember = ref<TeamMemberRpc | null>(null)
 
 // Loading states
 const isUpdating = ref(false)
@@ -48,19 +56,19 @@ const isRemovingMember = ref(false)
 // Dropdown state
 const activeDropdown = ref<string | null>(null)
 
-const isAdmin = computed(() => currentUserRole.value === 'Admin')
+const members = computed(() => detail.value?.members ?? [])
+const myRole = computed(() => detail.value?.myRole ?? 'MEMBER')
+const canEditTeam = computed(() => canManageMembers(myRole.value))
 
 // Fetch team details
 const fetchTeamDetails = async () => {
   isLoading.value = true
   const response = await teamApi.getTeamById(teamId.value)
   if (response.success && response.data) {
-    team.value = response.data.team
-    members.value = response.data.members
-    currentUserRole.value = response.data.currentUserRole
+    detail.value = response.data
     editForm.value = {
-      name: response.data.team.name,
-      description: response.data.team.description || ''
+      name: response.data.name,
+      description: response.data.description || ''
     }
   }
   isLoading.value = false
@@ -71,7 +79,11 @@ const handleUpdateTeam = async () => {
   if (!editForm.value.name.trim()) return
   
   isUpdating.value = true
-  const response = await teamApi.updateTeam(teamId.value, editForm.value.name, editForm.value.description)
+  const response = await teamApi.updateTeam(
+    teamId.value,
+    editForm.value.name,
+    editForm.value.description
+  )
   if (response.success) {
     showEditModal.value = false
     await fetchTeamDetails()
@@ -86,7 +98,7 @@ const handleGenerateInviteCode = async () => {
   
   const response = await teamApi.generateInviteCode(teamId.value)
   if (response.success && response.data) {
-    inviteCode.value = response.data.code
+    inviteCode.value = response.data.inviteCode
   }
   isGeneratingCode.value = false
 }
@@ -101,7 +113,7 @@ const copyInviteCode = async () => {
 }
 
 // Change member role
-const openChangeRoleModal = (member: TeamMember) => {
+const openChangeRoleModal = (member: TeamMemberRpc) => {
   selectedMember.value = member
   showChangRoleModal.value = true
   activeDropdown.value = null
@@ -109,10 +121,16 @@ const openChangeRoleModal = (member: TeamMember) => {
 
 const handleChangeRole = async () => {
   if (!selectedMember.value) return
-  
+  if (selectedMember.value.role === 'OWNER') return
+
   isChangingRole.value = true
-  const newRole = selectedMember.value.role === 'Admin' ? 'User' : 'Admin'
-  const response = await teamApi.changeMemberRole(teamId.value, selectedMember.value.userId, newRole)
+  const newRole: 'ADMIN' | 'MEMBER' =
+    selectedMember.value.role === 'ADMIN' ? 'MEMBER' : 'ADMIN'
+  const response = await teamApi.changeMemberRole(
+    teamId.value,
+    selectedMember.value.userId,
+    newRole
+  )
   if (response.success) {
     showChangRoleModal.value = false
     selectedMember.value = null
@@ -122,7 +140,7 @@ const handleChangeRole = async () => {
 }
 
 // Remove member
-const openRemoveMemberModal = (member: TeamMember) => {
+const openRemoveMemberModal = (member: TeamMemberRpc) => {
   selectedMember.value = member
   showRemoveMemberModal.value = true
   activeDropdown.value = null
@@ -132,7 +150,7 @@ const handleRemoveMember = async () => {
   if (!selectedMember.value) return
   
   isRemovingMember.value = true
-  const response = await teamApi.removeMember(teamId.value, selectedMember.value.userId)
+  const response = await teamApi.kickMember(teamId.value, selectedMember.value.userId)
   if (response.success) {
     showRemoveMemberModal.value = false
     selectedMember.value = null
@@ -142,8 +160,9 @@ const handleRemoveMember = async () => {
 }
 
 // Toggle dropdown
-const toggleDropdown = (memberId: string) => {
-  activeDropdown.value = activeDropdown.value === memberId ? null : memberId
+const toggleDropdown = (memberUserId: number) => {
+  const key = String(memberUserId)
+  activeDropdown.value = activeDropdown.value === key ? null : key
 }
 
 // Go back
@@ -165,7 +184,7 @@ onMounted(() => {
       <div class="h-64 bg-muted rounded-lg animate-pulse" />
     </div>
 
-    <template v-else-if="team">
+    <template v-else-if="detail">
       <!-- Header -->
       <div class="mb-6">
         <button
@@ -179,14 +198,14 @@ onMounted(() => {
         <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div class="flex items-center gap-4">
             <div class="flex h-14 w-14 items-center justify-center rounded-xl bg-primary/10 text-primary text-xl font-bold">
-              {{ team.name.charAt(0) }}
+              {{ detail.name.charAt(0) }}
             </div>
             <div>
-              <h1 class="text-2xl font-bold text-foreground">{{ team.name }}</h1>
-              <p v-if="team.description" class="text-muted-foreground">{{ team.description }}</p>
+              <h1 class="text-2xl font-bold text-foreground">{{ detail.name }}</h1>
+              <p v-if="detail.description" class="text-muted-foreground">{{ detail.description }}</p>
             </div>
           </div>
-          <div v-if="isAdmin" class="flex gap-2">
+          <div v-if="canEditTeam" class="flex gap-2">
             <Button variant="outline" @click="showEditModal = true">
               <Settings class="h-4 w-4 mr-2" />
               팀 설정
@@ -221,8 +240,8 @@ onMounted(() => {
                 <Crown class="h-5 w-5 text-amber-600" />
               </div>
               <div>
-                <p class="text-2xl font-bold">{{ members.filter(m => m.role === 'Admin').length }}</p>
-                <p class="text-sm text-muted-foreground">관리자</p>
+                <p class="text-2xl font-bold">{{ members.filter(m => m.role === 'OWNER' || m.role === 'ADMIN').length }}</p>
+                <p class="text-sm text-muted-foreground">소유·관리</p>
               </div>
             </div>
           </CardContent>
@@ -234,7 +253,7 @@ onMounted(() => {
                 <User class="h-5 w-5 text-green-600" />
               </div>
               <div>
-                <p class="text-2xl font-bold">{{ members.filter(m => m.role === 'User').length }}</p>
+                <p class="text-2xl font-bold">{{ members.filter(m => m.role === 'MEMBER').length }}</p>
                 <p class="text-sm text-muted-foreground">일반 멤버</p>
               </div>
             </div>
@@ -254,43 +273,45 @@ onMounted(() => {
           <div class="divide-y divide-border">
             <div
               v-for="member in members"
-              :key="member.id"
+              :key="member.userId"
               class="flex items-center justify-between py-4 first:pt-0 last:pb-0"
             >
               <div class="flex items-center gap-3">
-                <Avatar :fallback="member.user.name.charAt(0)" />
+                <Avatar :fallback="member.name.charAt(0)" />
                 <div>
-                  <p class="font-medium text-foreground">{{ member.user.name }}</p>
-                  <p class="text-sm text-muted-foreground">{{ member.user.email }}</p>
+                  <p class="font-medium text-foreground">{{ member.name }}</p>
+                  <p class="text-sm text-muted-foreground">{{ member.email }}</p>
                 </div>
               </div>
               <div class="flex items-center gap-2">
-                <Badge :variant="member.role === 'Admin' ? 'default' : 'secondary'">
-                  <Crown v-if="member.role === 'Admin'" class="h-3 w-3 mr-1" />
-                  {{ member.role === 'Admin' ? '관리자' : '멤버' }}
+                <Badge
+                  :variant="member.role === 'MEMBER' ? 'secondary' : 'default'"
+                >
+                  <Crown v-if="member.role === 'OWNER'" class="h-3 w-3 mr-1" />
+                  {{ roleLabel(member.role) }}
                 </Badge>
                 
-                <!-- Admin Actions -->
-                <div v-if="isAdmin" class="relative">
+                <div v-if="canEditTeam && member.role !== 'OWNER'" class="relative">
                   <button
                     class="p-1.5 hover:bg-muted rounded"
-                    @click.stop="toggleDropdown(member.id)"
+                    @click.stop="toggleDropdown(member.userId)"
                   >
                     <MoreVertical class="h-4 w-4" />
                   </button>
                   
                   <div
-                    v-if="activeDropdown === member.id"
+                    v-if="activeDropdown === String(member.userId)"
                     class="absolute right-0 top-full mt-1 w-48 rounded-md border border-border bg-background shadow-lg z-10"
                     @click.stop
                   >
                     <div class="py-1">
                       <button
+                        v-if="member.role === 'ADMIN' || member.role === 'MEMBER'"
                         class="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted"
                         @click="openChangeRoleModal(member)"
                       >
                         <Shield class="h-4 w-4" />
-                        {{ member.role === 'Admin' ? '멤버로 변경' : '관리자로 변경' }}
+                        {{ member.role === 'ADMIN' ? '멤버로 변경' : '관리자로 변경' }}
                       </button>
                       <button
                         class="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-muted"
@@ -343,7 +364,7 @@ onMounted(() => {
     <Modal
       v-model:open="showInviteModal"
       title="초대 코드"
-      :description="`'${team?.name}' 팀 초대 코드`"
+      :description="`'${detail?.name}' 팀 초대 코드`"
     >
       <div v-if="isGeneratingCode" class="flex justify-center py-8">
         <div class="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
@@ -379,8 +400,8 @@ onMounted(() => {
       title="역할 변경"
     >
       <p class="text-sm text-muted-foreground">
-        <strong class="text-foreground">{{ selectedMember?.user.name }}</strong>님의 역할을
-        <strong class="text-foreground">{{ selectedMember?.role === 'Admin' ? '멤버' : '관리자' }}</strong>로 변경하시겠습니까?
+        <strong class="text-foreground">{{ selectedMember?.name }}</strong>님의 역할을
+        <strong class="text-foreground">{{ selectedMember?.role === 'ADMIN' ? '멤버' : '관리자' }}</strong>로 변경하시겠습니까?
       </p>
       <template #footer>
         <Button variant="outline" @click="showChangRoleModal = false">취소</Button>
@@ -394,7 +415,7 @@ onMounted(() => {
       title="멤버 제거"
     >
       <p class="text-sm text-muted-foreground">
-        <strong class="text-foreground">{{ selectedMember?.user.name }}</strong>님을 팀에서 제거하시겠습니까?
+        <strong class="text-foreground">{{ selectedMember?.name }}</strong>님을 팀에서 제거하시겠습니까?
       </p>
       <template #footer>
         <Button variant="outline" @click="showRemoveMemberModal = false">취소</Button>

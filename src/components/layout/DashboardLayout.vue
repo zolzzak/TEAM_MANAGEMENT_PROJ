@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { Calendar, Users, Bell, Settings, LogOut, Menu, X, ChevronDown, Plus } from 'lucide-vue-next'
+import { Calendar, Users, Bell, Settings, LogOut, Menu, X, Plus } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import { authApi } from '@/services/api'
 
@@ -10,7 +10,6 @@ const route = useRoute()
 
 const isSidebarOpen = ref(true)
 const isMobileSidebarOpen = ref(false)
-const isUserMenuOpen = ref(false)
 
 // Mock 사용자 데이터 (나중에 store에서 가져올 예정)
 const currentUser = ref({

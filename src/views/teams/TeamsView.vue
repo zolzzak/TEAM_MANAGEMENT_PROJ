@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Plus, Users, Settings, MoreVertical, UserPlus, LogOut, Trash2, Copy, Check } from 'lucide-vue-next'
 import DashboardLayout from '@/components/layout/DashboardLayout.vue'
@@ -7,20 +7,29 @@ import Button from '@/components/ui/Button.vue'
 import Card from '@/components/ui/Card.vue'
 import CardHeader from '@/components/ui/CardHeader.vue'
 import CardTitle from '@/components/ui/CardTitle.vue'
-import CardDescription from '@/components/ui/CardDescription.vue'
 import CardContent from '@/components/ui/CardContent.vue'
 import Modal from '@/components/ui/Modal.vue'
 import Input from '@/components/ui/Input.vue'
 import Label from '@/components/ui/Label.vue'
 import Badge from '@/components/ui/Badge.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
-import type { Team, TeamMember } from '@/types'
+import type { TeamListItem, TeamRole } from '@/types'
 import { teamApi } from '@/services/api'
 
 const router = useRouter()
 
+function roleLabel(role: TeamRole) {
+  if (role === 'OWNER') return '소유자'
+  if (role === 'ADMIN') return '관리자'
+  return '멤버'
+}
+
+function canManageTeam(role: TeamRole) {
+  return role === 'OWNER' || role === 'ADMIN'
+}
+
 // State
-const teams = ref<(Team & { members: TeamMember[], role: 'Admin' | 'User' })[]>([])
+const teams = ref<TeamListItem[]>([])
 const isLoading = ref(true)
 
 // Modals
@@ -32,7 +41,7 @@ const showDeleteModal = ref(false)
 // Form state
 const createForm = ref({ name: '', description: '' })
 const joinCode = ref('')
-const selectedTeam = ref<Team | null>(null)
+const selectedTeam = ref<TeamListItem | null>(null)
 const inviteCode = ref('')
 const copiedCode = ref(false)
 
@@ -86,14 +95,14 @@ const handleJoinTeam = async () => {
 }
 
 // Generate invite code
-const handleGenerateInviteCode = async (team: Team) => {
+const handleGenerateInviteCode = async (team: TeamListItem) => {
   selectedTeam.value = team
   showInviteModal.value = true
   isGeneratingCode.value = true
   
-  const response = await teamApi.generateInviteCode(team.id)
+  const response = await teamApi.generateInviteCode(String(team.teamId))
   if (response.success && response.data) {
-    inviteCode.value = response.data.code
+    inviteCode.value = response.data.inviteCode
   }
   isGeneratingCode.value = false
 }
@@ -112,7 +121,7 @@ const handleDeleteTeam = async () => {
   if (!selectedTeam.value) return
   
   isDeleting.value = true
-  const response = await teamApi.deleteTeam(selectedTeam.value.id)
+  const response = await teamApi.deleteTeam(String(selectedTeam.value.teamId))
   if (response.success) {
     showDeleteModal.value = false
     selectedTeam.value = null
@@ -122,18 +131,19 @@ const handleDeleteTeam = async () => {
 }
 
 // Leave team
-const handleLeaveTeam = async (team: Team) => {
+const handleLeaveTeam = async (team: TeamListItem) => {
   if (!confirm('정말로 이 팀에서 탈퇴하시겠습니까?')) return
   
-  const response = await teamApi.leaveTeam(team.id)
+  const response = await teamApi.leaveTeam(String(team.teamId))
   if (response.success) {
     await fetchTeams()
   }
 }
 
 // Toggle dropdown
-const toggleDropdown = (teamId: string) => {
-  activeDropdown.value = activeDropdown.value === teamId ? null : teamId
+const toggleDropdown = (teamId: number) => {
+  const key = String(teamId)
+  activeDropdown.value = activeDropdown.value === key ? null : key
 }
 
 // Navigate to team detail
@@ -205,9 +215,9 @@ onMounted(() => {
     <div v-else class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       <Card
         v-for="team in teams"
-        :key="team.id"
+        :key="team.teamId"
         class="hover:border-primary/50 transition-colors cursor-pointer group"
-        @click="goToTeamDetail(team.id)"
+        @click="goToTeamDetail(String(team.teamId))"
       >
         <CardHeader class="pb-3">
           <div class="flex items-start justify-between">
@@ -217,27 +227,27 @@ onMounted(() => {
               </div>
               <div>
                 <CardTitle class="text-base">{{ team.name }}</CardTitle>
-                <Badge :variant="team.role === 'Admin' ? 'default' : 'secondary'" class="mt-1">
-                  {{ team.role === 'Admin' ? '관리자' : '멤버' }}
+                <Badge :variant="canManageTeam(team.myRole) ? 'default' : 'secondary'" class="mt-1">
+                  {{ roleLabel(team.myRole) }}
                 </Badge>
               </div>
             </div>
             <div class="relative" @click.stop>
               <button
                 class="p-1.5 hover:bg-muted rounded opacity-0 group-hover:opacity-100 transition-opacity"
-                @click="toggleDropdown(team.id)"
+                @click="toggleDropdown(team.teamId)"
               >
                 <MoreVertical class="h-4 w-4" />
               </button>
               
               <!-- Dropdown Menu -->
               <div
-                v-if="activeDropdown === team.id"
+                v-if="activeDropdown === String(team.teamId)"
                 class="absolute right-0 top-full mt-1 w-48 rounded-md border border-border bg-background shadow-lg z-10"
               >
                 <div class="py-1">
                   <button
-                    v-if="team.role === 'Admin'"
+                    v-if="canManageTeam(team.myRole)"
                     class="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted"
                     @click="handleGenerateInviteCode(team)"
                   >
@@ -246,14 +256,14 @@ onMounted(() => {
                   </button>
                   <button
                     class="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted"
-                    @click="goToTeamDetail(team.id)"
+                    @click="goToTeamDetail(String(team.teamId))"
                   >
                     <Settings class="h-4 w-4" />
                     팀 설정
                   </button>
                   <hr class="my-1 border-border" />
                   <button
-                    v-if="team.role === 'Admin'"
+                    v-if="canManageTeam(team.myRole)"
                     class="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-muted"
                     @click="selectedTeam = team; showDeleteModal = true"
                   >
@@ -261,7 +271,7 @@ onMounted(() => {
                     팀 삭제
                   </button>
                   <button
-                    v-else
+                    v-else-if="team.myRole === 'MEMBER'"
                     class="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-muted"
                     @click="handleLeaveTeam(team)"
                   >
@@ -279,7 +289,7 @@ onMounted(() => {
           </p>
           <div class="flex items-center gap-2 text-sm text-muted-foreground">
             <Users class="h-4 w-4" />
-            <span>{{ team.members.length }}명의 멤버</span>
+            <span>{{ team.memberCount }}명의 멤버</span>
           </div>
         </CardContent>
       </Card>

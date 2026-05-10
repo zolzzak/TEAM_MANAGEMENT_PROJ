@@ -63,23 +63,74 @@ export interface ApiResponse<T> {
   error?: RpcErrorBody
 }
 
-// 팀 관련 타입 (추후 사용)
-export interface Team {
-  id: string
+/** RPC 팀 역할 */
+export type TeamRole = 'OWNER' | 'ADMIN' | 'MEMBER'
+
+/** team.getMyList 항목 */
+export interface TeamListItem {
+  teamId: number
   name: string
-  description?: string
+  description?: string | null
+  memberCount: number
+  myRole: TeamRole
   createdAt: string
-  ownerId: string
 }
 
-export type TeamRole = 'Admin' | 'User'
+/** team.create 성공 data */
+export interface TeamCreateData {
+  teamId: number
+  name: string
+  description?: string | null
+  inviteCode: string
+  memberCount: number
+  myRole: TeamRole
+  createdAt: string
+}
 
-export interface TeamMember {
-  id: string
-  userId: string
-  teamId: string
+/** team.getDetail 멤버 */
+export interface TeamMemberRpc {
+  userId: number
+  name: string
+  email: string
+  profileImageUrl: string | null
   role: TeamRole
-  user: User
+  joinedAt: string
+}
+
+/** team.getDetail 성공 data */
+export interface TeamDetailData {
+  teamId: number
+  name: string
+  description?: string | null
+  inviteCode: string
+  myRole: TeamRole
+  members: TeamMemberRpc[]
+}
+
+/** team.update 성공 data */
+export interface TeamUpdateData {
+  teamId: number
+  name: string
+  description?: string | null
+}
+
+/** team.regenerateInviteCode 성공 data */
+export interface TeamInviteCodeData {
+  teamId: number
+  inviteCode: string
+}
+
+/** team.join 성공 data */
+export interface TeamJoinData {
+  teamId: number
+  name: string
+  myRole: TeamRole
+}
+
+/** team.changeMemberRole 성공 data */
+export interface TeamChangeMemberRoleData {
+  userId: number
+  role: TeamRole
 }
 
 // 일정 관련 타입 (추후 사용)
