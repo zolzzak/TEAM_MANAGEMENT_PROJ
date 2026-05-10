@@ -14,7 +14,14 @@ import type {
   TeamChangeMemberRoleData,
   TeamRole,
   TeamMemberRpc,
-  Schedule
+  Schedule,
+  ScheduleListByTeamItem,
+  ScheduleListByRangeItem,
+  ScheduleCreateData,
+  ScheduleDetailData,
+  ScheduleUpdateData,
+  RecurrenceType,
+  ScheduleUpdateScope
 } from '@/types'
 
 // API 기본 URL - 환경변수로 설정 가능
@@ -59,6 +66,62 @@ function generateInviteCodeString(length = 8): string {
     code += chars.charAt(Math.floor(Math.random() * chars.length))
   }
   return code
+}
+
+function scheduleRowId(scheduleId: number, startAt: string) {
+  return `${scheduleId}-${startAt}`
+}
+
+function parseYmd(s: string): Date {
+  const [y, m, d] = s.split('-').map(Number)
+  return new Date(y, m - 1, d)
+}
+
+function overlapsRange(startAt: string, endAt: string, rangeStart: string, rangeEnd: string): boolean {
+  const a0 = new Date(startAt).getTime()
+  const a1 = new Date(endAt).getTime()
+  const b0 = parseYmd(rangeStart).getTime()
+  const b1 = parseYmd(rangeEnd).getTime() + 86400000 - 1
+  return a0 <= b1 && a1 >= b0
+}
+
+function mapTeamItemToSchedule(row: ScheduleListByTeamItem, teamId: number, teamName?: string): Schedule {
+  return {
+    id: scheduleRowId(row.scheduleId, row.startAt),
+    scheduleId: row.scheduleId,
+    title: row.title,
+    startAt: row.startAt,
+    endAt: row.endAt,
+    teamId: String(teamId),
+    teamName,
+    color: row.color,
+    isAllDay: row.isAllDay,
+    recurrence: row.recurrence,
+    creatorId: row.creatorId,
+    creatorName: row.creatorName,
+    participantCount: row.participantCount,
+    myStatus: row.myStatus,
+    content: undefined
+  }
+}
+
+function mapRangeItemToSchedule(row: ScheduleListByRangeItem): Schedule {
+  return {
+    id: scheduleRowId(row.scheduleId, row.startAt),
+    scheduleId: row.scheduleId,
+    title: row.title,
+    startAt: row.startAt,
+    endAt: row.endAt,
+    teamId: String(row.teamId),
+    teamName: row.teamName,
+    color: row.color,
+    myStatus: row.myStatus
+  }
+}
+
+function utcToday(hour: number, minute: number): string {
+  const d = new Date()
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hour, minute, 0)).toISOString()
 }
 
 /** POST /api/rpc — 스펙: HTTP 200 + body.success 로 성공/실패 구분 */
@@ -331,6 +394,73 @@ const getCurrentUserId = (): number => 1
 
 function findMockTeam(teamId: number): MockTeam | undefined {
   return mockTeamStore.find(t => t.teamId === teamId)
+}
+
+function getMockTeamName(teamId: number): string {
+  return findMockTeam(teamId)?.name ?? '팀'
+}
+
+type MockScheduleRecord = {
+  scheduleId: number
+  teamId: number
+  title: string
+  description?: string
+  startAt: string
+  endAt: string
+  isAllDay: boolean
+  color: string
+  recurrence: RecurrenceType
+  recurrenceEndDate?: string
+  creatorId: number
+  creatorName: string
+  participantUserIds: number[]
+}
+
+let mockScheduleSeq = 101
+const mockScheduleRecords: MockScheduleRecord[] = [
+  {
+    scheduleId: 100,
+    teamId: 1,
+    title: '스프린트 회의',
+    description: '주간 스프린트 리뷰',
+    startAt: utcToday(9, 0),
+    endAt: utcToday(10, 0),
+    isAllDay: false,
+    color: '#5b8dee',
+    recurrence: 'NONE',
+    creatorId: 1,
+    creatorName: '홍길동',
+    participantUserIds: []
+  }
+]
+
+function recordToTeamItem(r: MockScheduleRecord): ScheduleListByTeamItem {
+  return {
+    scheduleId: r.scheduleId,
+    title: r.title,
+    startAt: r.startAt,
+    endAt: r.endAt,
+    isAllDay: r.isAllDay,
+    color: r.color,
+    recurrence: r.recurrence,
+    creatorId: r.creatorId,
+    creatorName: r.creatorName,
+    participantCount: Math.max(1, r.participantUserIds.length + 1),
+    myStatus: 'ACCEPTED'
+  }
+}
+
+function recordToRangeItem(r: MockScheduleRecord): ScheduleListByRangeItem {
+  return {
+    scheduleId: r.scheduleId,
+    title: r.title,
+    startAt: r.startAt,
+    endAt: r.endAt,
+    color: r.color,
+    teamId: r.teamId,
+    teamName: getMockTeamName(r.teamId),
+    myStatus: 'ACCEPTED'
+  }
 }
 
 function toDetailData(team: MockTeam, myUserId: number): TeamDetailData {
@@ -667,13 +797,233 @@ export const teamApi = {
   }
 }
 
-// 일정 관련 API (SCHEDULE RPC 스펙 연동 시 확장)
+/** 일정 RPC — 액션 이름은 백엔드와 불일치 시 문자열만 조정 */
 export const scheduleApi = {
-  async getSchedules(_params: {
-    year: number
-    month: number
-    teamId?: string
+  async listByTeam(
+    teamId: number,
+    startDate: string,
+    endDate: string
+  ): Promise<ApiResponse<ScheduleListByTeamItem[]>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY)
+      const rows = mockScheduleRecords.filter(
+        r => r.teamId === teamId && overlapsRange(r.startAt, r.endAt, startDate, endDate)
+      )
+      return { success: true, data: rows.map(recordToTeamItem) }
+    }
+    return rpcCall<ScheduleListByTeamItem[]>(
+      'schedule.listByTeam',
+      { teamId, startDate, endDate },
+      { accessToken: getStoredAccessToken() }
+    )
+  },
+
+  async listByRange(
+    startDate: string,
+    endDate: string,
+    teamIds?: number[]
+  ): Promise<ApiResponse<ScheduleListByRangeItem[]>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY)
+      const uid = getCurrentUserId()
+      const myTeamIds = mockTeamStore.filter(t => t.members.some(m => m.userId === uid)).map(t => t.teamId)
+      const filterTeams = teamIds?.length ? teamIds : myTeamIds
+      const rows = mockScheduleRecords.filter(
+        r => filterTeams.includes(r.teamId) && overlapsRange(r.startAt, r.endAt, startDate, endDate)
+      )
+      return { success: true, data: rows.map(recordToRangeItem) }
+    }
+    const params: Record<string, unknown> = { startDate, endDate }
+    if (teamIds?.length) params.teamIds = teamIds
+    return rpcCall<ScheduleListByRangeItem[]>(
+      'schedule.listByRange',
+      params,
+      { accessToken: getStoredAccessToken() }
+    )
+  },
+
+  /** 월/주/일 뷰에서 사용 — 팀 필터 시 listByTeam, 아니면 listByRange */
+  async loadCalendarSchedules(opts: {
+    startDate: string
+    endDate: string
+    teamId: number | null
   }): Promise<ApiResponse<Schedule[]>> {
-    return { success: true, data: [] }
+    if (opts.teamId != null) {
+      const r = await scheduleApi.listByTeam(opts.teamId, opts.startDate, opts.endDate)
+      if (!r.success || !r.data) {
+        return { success: false, message: r.message, error: r.error }
+      }
+      const mapped = r.data.map(row => mapTeamItemToSchedule(row, opts.teamId!))
+      return { success: true, data: mapped }
+    }
+    const r = await scheduleApi.listByRange(opts.startDate, opts.endDate)
+    if (!r.success || !r.data) {
+      return { success: false, message: r.message, error: r.error }
+    }
+    return { success: true, data: r.data.map(mapRangeItemToSchedule) }
+  },
+
+  async create(params: {
+    teamId: number
+    title: string
+    description?: string
+    startAt: string
+    endAt: string
+    isAllDay?: boolean
+    color?: string
+    recurrence?: RecurrenceType
+    recurrenceEndDate?: string
+    participantUserIds?: number[]
+  }): Promise<ApiResponse<ScheduleCreateData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY)
+      const id = mockScheduleSeq++
+      const u = mockUsers[0]
+      mockScheduleRecords.push({
+        scheduleId: id,
+        teamId: params.teamId,
+        title: params.title,
+        description: params.description,
+        startAt: params.startAt,
+        endAt: params.endAt,
+        isAllDay: params.isAllDay ?? false,
+        color: params.color ?? '#5b8dee',
+        recurrence: params.recurrence ?? 'NONE',
+        recurrenceEndDate: params.recurrenceEndDate,
+        creatorId: Number.parseInt(u.id, 10) || 1,
+        creatorName: u.name,
+        participantUserIds: params.participantUserIds ?? []
+      })
+      return {
+        success: true,
+        data: {
+          scheduleId: id,
+          title: params.title,
+          startAt: params.startAt,
+          endAt: params.endAt,
+          color: params.color ?? '#5b8dee',
+          recurrence: params.recurrence ?? 'NONE'
+        }
+      }
+    }
+    const body: Record<string, unknown> = {
+      teamId: params.teamId,
+      title: params.title,
+      startAt: params.startAt,
+      endAt: params.endAt,
+      isAllDay: params.isAllDay ?? false
+    }
+    if (params.description !== undefined) body.description = params.description
+    if (params.color !== undefined) body.color = params.color
+    if (params.recurrence !== undefined) body.recurrence = params.recurrence
+    if (params.recurrenceEndDate !== undefined) body.recurrenceEndDate = params.recurrenceEndDate
+    if (params.participantUserIds?.length) body.participantUserIds = params.participantUserIds
+    return rpcCall<ScheduleCreateData>('schedule.create', body, { accessToken: getStoredAccessToken() })
+  },
+
+  async getDetail(scheduleId: number): Promise<ApiResponse<ScheduleDetailData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY)
+      const r = mockScheduleRecords.find(x => x.scheduleId === scheduleId)
+      if (!r) {
+        return {
+          success: false,
+          message: '일정을 찾을 수 없습니다',
+          error: { code: 'E004', message: '일정을 찾을 수 없습니다' }
+        }
+      }
+      const team = findMockTeam(r.teamId)
+      const participants = r.participantUserIds.map(uid => {
+        const m = team?.members.find(mem => mem.userId === uid)
+        return {
+          userId: uid,
+          name: m?.name ?? `사용자 ${uid}`,
+          status: 'PENDING' as const
+        }
+      })
+      return {
+        success: true,
+        data: {
+          scheduleId: r.scheduleId,
+          title: r.title,
+          description: r.description ?? null,
+          startAt: r.startAt,
+          endAt: r.endAt,
+          isAllDay: r.isAllDay,
+          color: r.color,
+          recurrence: r.recurrence,
+          creatorId: r.creatorId,
+          creatorName: r.creatorName,
+          myStatus: 'ACCEPTED',
+          participants
+        }
+      }
+    }
+    return rpcCall<ScheduleDetailData>(
+      'schedule.getDetail',
+      { scheduleId },
+      { accessToken: getStoredAccessToken() }
+    )
+  },
+
+  async update(
+    scheduleId: number,
+    patch: {
+      title?: string
+      description?: string
+      startAt?: string
+      endAt?: string
+      color?: string
+      updateScope?: ScheduleUpdateScope
+      participantUserIds?: number[]
+    }
+  ): Promise<ApiResponse<ScheduleUpdateData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY)
+      const r = mockScheduleRecords.find(x => x.scheduleId === scheduleId)
+      if (!r) {
+        return {
+          success: false,
+          message: '일정을 찾을 수 없습니다',
+          error: { code: 'E004', message: '일정을 찾을 수 없습니다' }
+        }
+      }
+      if (patch.title !== undefined) r.title = patch.title
+      if (patch.description !== undefined) r.description = patch.description
+      if (patch.startAt !== undefined) r.startAt = patch.startAt
+      if (patch.endAt !== undefined) r.endAt = patch.endAt
+      if (patch.color !== undefined) r.color = patch.color
+      if (patch.participantUserIds) r.participantUserIds = patch.participantUserIds
+      return {
+        success: true,
+        data: {
+          scheduleId: r.scheduleId,
+          title: r.title,
+          startAt: r.startAt,
+          endAt: r.endAt
+        }
+      }
+    }
+    const params: Record<string, unknown> = { scheduleId, ...patch }
+    return rpcCall<ScheduleUpdateData>('schedule.update', params, { accessToken: getStoredAccessToken() })
+  },
+
+  async delete(scheduleId: number, deleteScope?: ScheduleUpdateScope): Promise<ApiResponse<null>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY)
+      const idx = mockScheduleRecords.findIndex(x => x.scheduleId === scheduleId)
+      if (idx === -1) {
+        return {
+          success: false,
+          message: '일정을 찾을 수 없습니다',
+          error: { code: 'E004', message: '일정을 찾을 수 없습니다' }
+        }
+      }
+      mockScheduleRecords.splice(idx, 1)
+      return { success: true, data: null }
+    }
+    const params: Record<string, unknown> = { scheduleId }
+    if (deleteScope) params.deleteScope = deleteScope
+    return rpcCall<null>('schedule.delete', params, { accessToken: getStoredAccessToken() })
   }
 }
