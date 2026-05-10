@@ -65,7 +65,7 @@ const onSubmit = handleSubmit(async (values) => {
       <CardHeader class="space-y-1 px-0 lg:px-6">
         <CardTitle class="text-2xl">비밀번호 찾기</CardTitle>
         <CardDescription>
-          가입한 이메일 주소를 입력하면 임시 비밀번호를 보내드립니다
+          가입한 이메일 주소를 입력하면 비밀번호 재설정 안내를 보내드립니다
         </CardDescription>
       </CardHeader>
       
@@ -79,10 +79,10 @@ const onSubmit = handleSubmit(async (values) => {
             <CheckCircle class="h-8 w-8 text-green-600" />
           </div>
           <div class="text-center space-y-2">
-            <h3 class="text-lg font-semibold">이메일을 확인해주세요</h3>
+            <h3 class="text-lg font-semibold">요청을 접수했습니다</h3>
             <p class="text-sm text-muted-foreground">
-              <span class="font-medium text-foreground">{{ submittedEmail }}</span>
-              으로<br />임시 비밀번호를 발송했습니다.
+              입력하신 주소(<span class="font-medium text-foreground">{{ submittedEmail }}</span>)로 안내가
+              발송될 수 있습니다. 메일함을 확인해 주세요.
             </p>
           </div>
           <RouterLink to="/login">
@@ -127,7 +127,7 @@ const onSubmit = handleSubmit(async (values) => {
             :loading="isLoading"
             :disabled="!meta.valid"
           >
-            임시 비밀번호 발급
+            재설정 메일 요청
           </Button>
         </form>
       </CardContent>

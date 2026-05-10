@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
@@ -26,7 +26,7 @@ const router = useRouter()
 const loginSchema = toTypedSchema(
   z.object({
     email: z.string().min(1, '이메일을 입력해주세요').email('올바른 이메일 형식이 아닙니다'),
-    password: z.string().min(1, '비밀번호를 입력해주세요').min(6, '비밀번호는 최소 6자 이상입니다')
+    password: z.string().min(1, '비밀번호를 입력해주세요').min(8, '비밀번호는 최소 8자 이상입니다')
   })
 )
 
@@ -51,8 +51,8 @@ const onSubmit = handleSubmit(async (values) => {
   
   try {
     const response = await authApi.login(values.email, values.password)
-    if (response.success) {
-      // TODO: 로그인 성공 후 대시보드로 이동
+    if (response.success && response.data) {
+      localStorage.setItem('token', response.data.accessToken)
       router.push('/')
     } else {
       serverError.value = response.message || '로그인에 실패했습니다'

@@ -1,10 +1,23 @@
-import type { ApiResponse, AuthResponse, RegisterRequest, User, Team, TeamMember, TeamRole } from '@/types'
+import type {
+  ApiResponse,
+  AuthLoginData,
+  AuthSignupData,
+  RegisterRequest,
+  RpcErrorBody,
+  User,
+  Team,
+  TeamMember,
+  TeamRole
+} from '@/types'
 
 // API 기본 URL - 환경변수로 설정 가능
 const API_BASE = import.meta.env.VITE_API_URL || ''
 
 // Mock 모드 여부 확인
 const USE_MOCK = !import.meta.env.VITE_API_URL
+
+// RPC 단일 엔드포인트 (POST + action / params)
+const RPC_PATH = '/api/rpc'
 
 // 지연 시간 시뮬레이션 (ms)
 const MOCK_DELAY = 800
@@ -21,13 +34,75 @@ const mockUsers: User[] = [
 
 // Mock 비밀번호 저장소 (실제로는 해시화되어야 함)
 const mockPasswords: Record<string, string> = {
-  'test@example.com': 'password123'
+  'test@example.com': 'Passw0rd!'
 }
 
 // 지연 시뮬레이션 헬퍼
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-// HTTP 요청 헬퍼 (실제 API 호출 시 사용)
+/** POST /api/rpc — 스펙: HTTP 200 + body.success 로 성공/실패 구분 */
+async function rpcCall<T>(
+  action: string,
+  params: Record<string, unknown>,
+  init?: { accessToken?: string | null }
+): Promise<ApiResponse<T>> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json'
+  }
+  if (init?.accessToken) {
+    headers.Authorization = `Bearer ${init.accessToken}`
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}${RPC_PATH}`, {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+      body: JSON.stringify({ action, params })
+    })
+
+    const text = await response.text()
+    let json: unknown
+    try {
+      json = text ? JSON.parse(text) : {}
+    } catch {
+      return { success: false, message: '응답을 해석할 수 없습니다' }
+    }
+
+    const body = json as {
+      success?: boolean
+      data?: T
+      error?: RpcErrorBody
+    }
+
+    if (body.success === false && body.error) {
+      return {
+        success: false,
+        message: body.error.message,
+        error: body.error
+      }
+    }
+
+    if (body.success === true) {
+      return {
+        success: true,
+        data: body.data as T
+      }
+    }
+
+    return {
+      success: false,
+      message: '알 수 없는 응답 형식입니다'
+    }
+  } catch {
+    return {
+      success: false,
+      message: '서버와 통신할 수 없습니다'
+    }
+  }
+}
+
+// HTTP 요청 헬퍼 (TEAM/SCHEDULE 등 레거시 REST — 추후 RPC로 통합)
 async function fetchApi<T>(
   endpoint: string,
   options?: RequestInit
@@ -62,59 +137,62 @@ async function fetchApi<T>(
   }
 }
 
-// 인증 관련 API
+// 인증 관련 API — RPC action: auth.*
 export const authApi = {
   /**
-   * 로그인
+   * 로그인 — auth.login
    */
-  async login(email: string, password: string): Promise<ApiResponse<AuthResponse>> {
+  async login(email: string, password: string): Promise<ApiResponse<AuthLoginData>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
 
-      // Mock 로그인 처리
       const user = mockUsers.find(u => u.email === email)
       const storedPassword = mockPasswords[email]
 
       if (!user || storedPassword !== password) {
         return {
           success: false,
-          message: '이메일 또는 비밀번호가 올바르지 않습니다'
+          message: '이메일 또는 비밀번호가 올바르지 않습니다',
+          error: { code: 'E001', message: '이메일 또는 비밀번호가 올바르지 않습니다' }
         }
       }
 
+      const uid = Number.parseInt(user.id, 10)
       return {
         success: true,
         data: {
-          user,
-          token: 'mock-jwt-token-' + Date.now()
+          accessToken: 'mock-access-token-' + Date.now(),
+          tokenType: 'Bearer',
+          expiresIn: 3600,
+          user: {
+            userId: Number.isFinite(uid) ? uid : 1,
+            email: user.email,
+            name: user.name,
+            profileImageUrl: null
+          }
         }
       }
     }
 
-    // 실제 API 호출
-    return fetchApi<AuthResponse>('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password })
-    })
+    return rpcCall<AuthLoginData>('auth.login', { email, password })
   },
 
   /**
-   * 회원가입
+   * 회원가입 — auth.signup (params: email, password, name)
    */
-  async register(data: RegisterRequest): Promise<ApiResponse<AuthResponse>> {
+  async register(data: RegisterRequest): Promise<ApiResponse<AuthSignupData>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
 
-      // 이메일 중복 체크
       const existingUser = mockUsers.find(u => u.email === data.email)
       if (existingUser) {
         return {
           success: false,
-          message: '이미 사용 중인 이메일입니다'
+          message: '이미 사용 중인 이메일입니다',
+          error: { code: 'E005', message: '이미 사용 중인 이메일입니다' }
         }
       }
 
-      // 새 사용자 생성
       const newUser: User = {
         id: String(mockUsers.length + 1),
         name: data.name,
@@ -128,79 +206,99 @@ export const authApi = {
       return {
         success: true,
         data: {
-          user: newUser,
-          token: 'mock-jwt-token-' + Date.now()
+          userId: Number.parseInt(newUser.id, 10),
+          email: newUser.email,
+          name: newUser.name,
+          createdAt: newUser.createdAt
         }
       }
     }
 
-    // 실제 API 호출
-    return fetchApi<AuthResponse>('/api/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(data)
+    return rpcCall<AuthSignupData>('auth.signup', {
+      email: data.email,
+      password: data.password,
+      name: data.name
     })
   },
 
   /**
-   * 비밀번호 찾기 (임시 비밀번호 발급)
+   * 로그아웃 — auth.logout (Bearer + Refresh 쿠키)
    */
-  async forgotPassword(email: string): Promise<ApiResponse<{ message: string }>> {
+  async logout(accessToken: string | null): Promise<ApiResponse<null>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
+      return { success: true, data: null }
+    }
 
-      // 이메일 존재 여부 확인
-      const user = mockUsers.find(u => u.email === email)
-      if (!user) {
-        // 보안상 이유로 존재하지 않아도 성공으로 응답
-        return {
-          success: true,
-          data: {
-            message: '임시 비밀번호가 이메일로 발송되었습니다'
+    if (!accessToken) {
+      return { success: true, data: null }
+    }
+
+    return rpcCall<null>('auth.logout', {}, { accessToken })
+  },
+
+  /**
+   * 액세스 토큰 갱신 — auth.refresh (Refresh Token: HttpOnly Cookie)
+   */
+  async refresh(): Promise<ApiResponse<AuthLoginData>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY)
+      const user = mockUsers[0]
+      const uid = Number.parseInt(user.id, 10)
+      return {
+        success: true,
+        data: {
+          accessToken: 'mock-refreshed-token-' + Date.now(),
+          tokenType: 'Bearer',
+          expiresIn: 3600,
+          user: {
+            userId: Number.isFinite(uid) ? uid : 1,
+            email: user.email,
+            name: user.name,
+            profileImageUrl: null
           }
         }
       }
-
-      // 실제로는 이메일 발송 처리
-      console.log(`[Mock] 임시 비밀번호가 ${email}로 발송되었습니다`)
-
-      return {
-        success: true,
-        data: {
-          message: '임시 비밀번호가 이메일로 발송되었습니다'
-        }
-      }
     }
 
-    // 실제 API 호출
-    return fetchApi<{ message: string }>('/api/auth/forgot-password', {
-      method: 'POST',
-      body: JSON.stringify({ email })
-    })
+    return rpcCall<AuthLoginData>('auth.refresh', {})
   },
 
   /**
-   * 비밀번호 변경
+   * 비밀번호 찾기 — auth.forgotPassword (성공 시 data: null)
+   */
+  async forgotPassword(email: string): Promise<ApiResponse<null>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY)
+      return { success: true, data: null }
+    }
+
+    return rpcCall<null>('auth.forgotPassword', { email })
+  },
+
+  /**
+   * 비밀번호 변경 — auth.changePassword (인증 필요)
    */
   async changePassword(
     currentPassword: string,
-    newPassword: string
-  ): Promise<ApiResponse<{ message: string }>> {
+    newPassword: string,
+    newPasswordConfirm: string,
+    accessToken: string
+  ): Promise<ApiResponse<null>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-
-      return {
-        success: true,
-        data: {
-          message: '비밀번호가 변경되었습니다'
-        }
-      }
+      return { success: true, data: null }
     }
 
-    // 실제 API 호출
-    return fetchApi<{ message: string }>('/api/auth/change-password', {
-      method: 'POST',
-      body: JSON.stringify({ currentPassword, newPassword })
-    })
+    return rpcCall<null>(
+      'auth.changePassword',
+      {
+        currentPassword,
+        newPassword,
+        newPasswordConfirm
+      },
+      { accessToken }
+    )
   }
 }
 

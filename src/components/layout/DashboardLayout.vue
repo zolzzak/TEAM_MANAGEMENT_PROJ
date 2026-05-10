@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Calendar, Users, Bell, Settings, LogOut, Menu, X, ChevronDown, Plus } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
+import { authApi } from '@/services/api'
 
 const router = useRouter()
 const route = useRoute()
@@ -39,8 +40,9 @@ const toggleMobileSidebar = () => {
   isMobileSidebarOpen.value = !isMobileSidebarOpen.value
 }
 
-const handleLogout = () => {
-  // TODO: 실제 로그아웃 처리
+const handleLogout = async () => {
+  const token = localStorage.getItem('token')
+  await authApi.logout(token)
   localStorage.removeItem('token')
   router.push('/login')
 }
