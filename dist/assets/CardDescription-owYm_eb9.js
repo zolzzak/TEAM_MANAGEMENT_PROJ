@@ -1,0 +1,1 @@
+import{G as e,M as t,b as n,g as r,k as i,ut as a}from"./vue-router-B-8X8B12.js";import{o}from"./api-H43IJWXX.js";var s=n({__name:`CardDescription`,props:{class:{}},setup(n){let s=n;return(n,c)=>(i(),r(`p`,{class:a(e(o)(`text-sm text-muted-foreground`,s.class))},[t(n.$slots,`default`)],2))}});export{s as t};
