@@ -1,1 +1,0 @@
-import{E as e,H as t,U as n,_ as r,k as i,m as a}from"./index-BYOM40Wq.js";import{o}from"./api-BDMWYMpI.js";var s=r({__name:`CardDescription`,props:{class:{}},setup(r){let s=r;return(r,c)=>(e(),a(`p`,{class:n(t(o)(`text-sm text-muted-foreground`,s.class))},[i(r.$slots,`default`)],2))}});export{s as t};

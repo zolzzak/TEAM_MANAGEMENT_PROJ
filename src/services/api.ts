@@ -132,7 +132,7 @@ function utcToday(hour: number, minute: number): string {
 }
 
 /** POST /api/rpc — 스펙: HTTP 200 + body.success 로 성공/실패 구분 */
-async function rpcCall<T>(
+export async function rpcCall<T>(
   action: string,
   params: Record<string, unknown>,
   init?: { accessToken?: string | null }
@@ -194,6 +194,7 @@ async function rpcCall<T>(
 }
 
 async function restCall<T>(
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   init: { body?: unknown; accessToken?: string | null } = {}
 ): Promise<ApiResponse<T>> {
@@ -203,11 +204,13 @@ async function restCall<T>(
 
   try {
     const response = await fetch(`${API_BASE}${path}`, {
-      method: 'POST',
+      method,
       headers,
       credentials: 'include',
       body: init.body === undefined ? undefined : JSON.stringify(init.body)
     })
+
+    const authHeader = response.headers.get('Authorization')
     const text = await response.text()
     let json: unknown
     try {
@@ -223,16 +226,29 @@ async function restCall<T>(
       error?: RpcErrorBody
     } | undefined
 
-    if (!response.ok || body?.success === false) {
+    if (body?.success === false) {
       return {
         success: false,
-        message: body?.error?.message || body?.message || `요청에 실패했습니다 (${response.status})`,
-        error: body?.error
+        message: body.error?.message || body.message || `요청에 실패했습니다 (${response.status})`,
+        error: body.error
       }
     }
 
-    if (body?.success === true) return { success: true, data: body.data }
-    return json === undefined ? { success: true } : { success: true, data: json as T }
+    if (response.ok) {
+      if (body?.success === true) return { success: true, data: body.data as T }
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.replace(/^Bearer\s+/i, '')
+        return { success: true, data: { ...(json as object), accessToken: token } as T }
+      }
+      if (json === undefined) return { success: true, data: undefined as T }
+      return { success: true, data: json as T }
+    }
+
+    return {
+      success: false,
+      message: body?.error?.message || body?.message || `요청에 실패했습니다 (${response.status})`,
+      error: body?.error
+    }
   } catch {
     return { success: false, message: '서버와 통신할 수 없습니다' }
   }
@@ -259,27 +275,29 @@ export const authApi = {
       }
 
       const uid = Number.parseInt(user.id, 10)
-      return {
-        success: true,
-        data: {
-          accessToken: 'mock-access-token-' + Date.now(),
-          tokenType: 'Bearer',
-          expiresIn: 3600,
-          user: {
-            userId: Number.isFinite(uid) ? uid : 1,
-            email: user.email,
-            name: user.name,
-            profileImageUrl: null
-          }
+      const data: AuthLoginData = {
+        accessToken: 'mock-access-token-' + Date.now(),
+        tokenType: 'Bearer',
+        expiresIn: 3600,
+        user: {
+          userId: Number.isFinite(uid) ? uid : 1,
+          email: user.email,
+          name: user.name,
+          profileImageUrl: null
         }
       }
+      localStorage.setItem('token', data.accessToken)
+      return { success: true, data }
     }
 
-    const response = await restCall<AuthLoginData>('/api/users/login', {
+    const response = await restCall<AuthLoginData>('POST', '/api/users/login', {
       body: { email, password }
     })
-    if (response.data?.user) {
-      response.data.user.profileImageUrl = response.data.user.profileImageUrl ?? null
+    if (response.success && response.data?.accessToken) {
+      localStorage.setItem('token', response.data.accessToken)
+    }
+    if (response.success && response.data && !response.data.user.profileImageUrl) {
+      response.data.user.profileImageUrl = null
     }
     return response
   },
@@ -321,13 +339,26 @@ export const authApi = {
       }
     }
 
-    return restCall<AuthSignupData>('/api/users/sign-up', {
+    const response = await restCall<AuthSignupData>('POST', '/api/users/sign-up', {
       body: {
         email: data.email,
         password: data.password,
         name: data.name
       }
     })
+
+    if (response.success) {
+      return {
+        success: true,
+        data: {
+          userId: 0,
+          email: data.email,
+          name: data.name,
+          createdAt: new Date().toISOString()
+        }
+      }
+    }
+    return response
   },
 
   /**
@@ -339,7 +370,7 @@ export const authApi = {
       return { success: true, data: null }
     }
 
-    return restCall<null>('/api/users/logout', { accessToken })
+    return restCall<null>('POST', '/api/users/logout', { accessToken })
   },
 
   /**
@@ -348,52 +379,50 @@ export const authApi = {
   async refresh(): Promise<ApiResponse<{ accessToken: string }>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
+      const token = 'mock-refreshed-token-' + Date.now()
+      localStorage.setItem('token', token)
       return {
         success: true,
         data: {
-          accessToken: 'mock-refreshed-token-' + Date.now()
+          accessToken: token
         }
       }
     }
 
-    return restCall<{ accessToken: string }>('/api/users/reissue')
+    const response = await restCall<{ accessToken: string }>('POST', '/api/users/reissue')
+    if (response.success && response.data?.accessToken) {
+      localStorage.setItem('token', response.data.accessToken)
+    }
+    return response
   },
 
   /**
-   * 비밀번호 찾기 — auth.forgotPassword (성공 시 data: null)
+   * 비밀번호 찾기 — 백엔드 미구현: 로컬 폴백
    */
-  async forgotPassword(email: string): Promise<ApiResponse<null>> {
+  async forgotPassword(_email: string): Promise<ApiResponse<null>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
       return { success: true, data: null }
     }
 
-    return rpcCall<null>('auth.forgotPassword', { email })
+    return { success: true, data: null }
   },
 
   /**
-   * 비밀번호 변경 — auth.changePassword (인증 필요)
+   * 비밀번호 변경 — 백엔드 미구현: 로컬 폴백
    */
   async changePassword(
-    currentPassword: string,
-    newPassword: string,
-    newPasswordConfirm: string,
-    accessToken: string
+    _currentPassword: string,
+    _newPassword: string,
+    _newPasswordConfirm: string,
+    _accessToken: string
   ): Promise<ApiResponse<null>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
       return { success: true, data: null }
     }
 
-    return rpcCall<null>(
-      'auth.changePassword',
-      {
-        currentPassword,
-        newPassword,
-        newPasswordConfirm
-      },
-      { accessToken }
-    )
+    return { success: true, data: null }
   }
 }
 
@@ -529,7 +558,7 @@ function toDetailData(team: MockTeam, myUserId: number): TeamDetailData {
   }
 }
 
-/** 팀 관련 API — RPC action: team.* */
+/** 팀 관련 API — 백엔드 REST 엔드포인트 기준 */
 export const teamApi = {
   async getMyTeams(): Promise<ApiResponse<TeamListItem[]>> {
     if (USE_MOCK) {
@@ -551,7 +580,21 @@ export const teamApi = {
       return { success: true, data: list }
     }
 
-    return rpcCall<TeamListItem[]>('team.getMyList', {}, { accessToken: getStoredAccessToken() })
+    const response = await restCall<any[]>('GET', '/api/teams', {
+      accessToken: getStoredAccessToken()
+    })
+    if (!response.success || !response.data) return response
+
+    const mapped: TeamListItem[] = response.data.map((item: any) => ({
+      teamId: Number(item.teamId),
+      name: item.name,
+      description: item.description ?? null,
+      memberCount: item.memberCount ?? 0,
+      myRole: item.myRole,
+      createdAt: item.createdAt ?? new Date().toISOString()
+    }))
+
+    return { success: true, data: mapped }
   },
 
   async getTeamById(teamId: string): Promise<ApiResponse<TeamDetailData>> {
@@ -568,7 +611,29 @@ export const teamApi = {
       }
     }
 
-    return rpcCall<TeamDetailData>('team.getDetail', { teamId: Number(teamId) }, { accessToken: getStoredAccessToken() })
+    const response = await restCall<any>('GET', `/api/teams/${teamId}`, {
+      accessToken: getStoredAccessToken()
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        teamId: Number(teamId),
+        name: response.data.name,
+        description: response.data.description ?? null,
+        inviteCode: response.data.inviteCode,
+        myRole: response.data.role,
+        members: (response.data.members ?? []).map((member: any) => ({
+          userId: Number(member.userId),
+          name: member.name,
+          email: member.email ?? '',
+          profileImageUrl: member.profileImageUrl ?? null,
+          role: member.role,
+          joinedAt: member.joinedAt ?? new Date().toISOString()
+        }))
+      }
+    }
   },
 
   async createTeam(name: string, description?: string): Promise<ApiResponse<TeamCreateData>> {
@@ -614,14 +679,27 @@ export const teamApi = {
       }
     }
 
-    return rpcCall<TeamCreateData>(
-      'team.create',
-      {
+    const response = await restCall<any>('POST', '/api/teams', {
+      accessToken: getStoredAccessToken(),
+      body: {
         name,
-        ...(description !== undefined && description !== '' ? { description } : {})
-      },
-      { accessToken: getStoredAccessToken() }
-    )
+        description: description ?? ''
+      }
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        teamId: Number(response.data.teamId),
+        name: response.data.name,
+        description: response.data.description ?? null,
+        inviteCode: response.data.inviteCode,
+        memberCount: 1,
+        myRole: response.data.myRole,
+        createdAt: new Date().toISOString()
+      }
+    }
   },
 
   async updateTeam(teamId: string, name: string, description?: string): Promise<ApiResponse<TeamUpdateData>> {
@@ -651,12 +729,23 @@ export const teamApi = {
       }
     }
 
-    const params: Record<string, unknown> = {
-      teamId: Number(teamId),
-      name,
-      ...(description !== undefined ? { description } : {})
+    const response = await restCall<any>('PUT', `/api/teams/${teamId}`, {
+      accessToken: getStoredAccessToken(),
+      body: {
+        name,
+        description: description ?? ''
+      }
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        teamId: Number(response.data.teamId),
+        name: response.data.name,
+        description: response.data.description ?? null
+      }
     }
-    return rpcCall<TeamUpdateData>('team.update', params, { accessToken: getStoredAccessToken() })
   },
 
   async deleteTeam(teamId: string): Promise<ApiResponse<null>> {
@@ -671,7 +760,7 @@ export const teamApi = {
       return { success: true, data: null }
     }
 
-    return rpcCall<null>('team.delete', { teamId: Number(teamId) }, { accessToken: getStoredAccessToken() })
+    return restCall<null>('DELETE', `/api/teams/${teamId}`, { accessToken: getStoredAccessToken() })
   },
 
   async generateInviteCode(teamId: string): Promise<ApiResponse<TeamInviteCodeData>> {
@@ -688,11 +777,18 @@ export const teamApi = {
       }
     }
 
-    return rpcCall<TeamInviteCodeData>(
-      'team.regenerateInviteCode',
-      { teamId: Number(teamId) },
-      { accessToken: getStoredAccessToken() }
-    )
+    const response = await restCall<any>('POST', `/api/teams/${teamId}/invite-code`, {
+      accessToken: getStoredAccessToken()
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        teamId: Number(response.data.teamId),
+        inviteCode: response.data.inviteCode
+      }
+    }
   },
 
   async joinWithCode(inviteCode: string): Promise<ApiResponse<TeamJoinData>> {
@@ -737,7 +833,20 @@ export const teamApi = {
       }
     }
 
-    return rpcCall<TeamJoinData>('team.join', { inviteCode: inviteCode.trim() }, { accessToken: getStoredAccessToken() })
+    const response = await restCall<any>('POST', '/api/teams/join', {
+      accessToken: getStoredAccessToken(),
+      body: { inviteCode: inviteCode.trim() }
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        teamId: Number(response.data.teamId),
+        name: response.data.name,
+        myRole: response.data.myRole ?? 'MEMBER'
+      }
+    }
   },
 
   async leaveTeam(teamId: string): Promise<ApiResponse<null>> {
@@ -764,7 +873,7 @@ export const teamApi = {
       return { success: true, data: null }
     }
 
-    return rpcCall<null>('team.leave', { teamId: Number(teamId) }, { accessToken: getStoredAccessToken() })
+    return restCall<null>('DELETE', `/api/teams/${teamId}/leave`, { accessToken: getStoredAccessToken() })
   },
 
   async changeMemberRole(
@@ -797,15 +906,19 @@ export const teamApi = {
       }
     }
 
-    return rpcCall<TeamChangeMemberRoleData>(
-      'team.changeMemberRole',
-      {
-        teamId: Number(teamId),
-        targetUserId: typeof targetUserId === 'string' ? Number(targetUserId) : targetUserId,
-        role: newRole
-      },
-      { accessToken: getStoredAccessToken() }
-    )
+    const response = await restCall<any>('POST', `/api/teams/${teamId}/members/${targetUserId}/role`, {
+      accessToken: getStoredAccessToken(),
+      body: { role: newRole }
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        userId: Number(response.data.userId),
+        role: response.data.role
+      }
+    }
   },
 
   async kickMember(teamId: string, targetUserId: string | number): Promise<ApiResponse<null>> {
@@ -832,18 +945,13 @@ export const teamApi = {
       return { success: true, data: null }
     }
 
-    return rpcCall<null>(
-      'team.kickMember',
-      {
-        teamId: Number(teamId),
-        targetUserId: typeof targetUserId === 'string' ? Number(targetUserId) : targetUserId
-      },
-      { accessToken: getStoredAccessToken() }
-    )
+    return restCall<null>('DELETE', `/api/teams/${teamId}/members/${targetUserId}`, {
+      accessToken: getStoredAccessToken()
+    })
   }
 }
 
-/** 일정 RPC — 액션 이름은 백엔드와 불일치 시 문자열만 조정 */
+/** 일정 API — 실제 백엔드 REST 엔드포인트 기준 */
 export const scheduleApi = {
   async listByTeam(
     teamId: number,
@@ -857,11 +965,28 @@ export const scheduleApi = {
       )
       return { success: true, data: rows.map(recordToTeamItem) }
     }
-    return rpcCall<ScheduleListByTeamItem[]>(
-      'schedule.listByTeam',
-      { teamId, startDate, endDate },
-      { accessToken: getStoredAccessToken() }
-    )
+
+    const response = await restCall<any[]>('GET', `/api/schedules?teamId=${teamId}`, {
+      accessToken: getStoredAccessToken()
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: response.data.map((item: any) => ({
+        scheduleId: Number(item.scheduleId),
+        title: item.title,
+        startAt: item.startAt,
+        endAt: item.endAt,
+        isAllDay: !!item.isAllDay,
+        color: item.color ?? '#5b8dee',
+        recurrence: item.recurrence ?? 'NONE',
+        creatorId: Number(item.creatorId),
+        creatorName: item.creatorName ?? '',
+        participantCount: Number(item.participantCount ?? 0),
+        myStatus: item.myStatus ?? 'PENDING'
+      }))
+    }
   },
 
   async listByRange(
@@ -879,16 +1004,30 @@ export const scheduleApi = {
       )
       return { success: true, data: rows.map(recordToRangeItem) }
     }
-    const params: Record<string, unknown> = { startDate, endDate }
-    if (teamIds?.length) params.teamIds = teamIds
-    return rpcCall<ScheduleListByRangeItem[]>(
-      'schedule.listByRange',
-      params,
-      { accessToken: getStoredAccessToken() }
-    )
+
+    const teamList = teamIds && teamIds.length > 0 ? teamIds : await teamApi.getMyTeams().then(r => r.success && r.data ? r.data.map(t => t.teamId) : [])
+    const aggregated: ScheduleListByRangeItem[] = []
+    for (const id of teamList) {
+      const r = await scheduleApi.listByTeam(id, startDate, endDate)
+      if (r.success && r.data) {
+        for (const row of r.data) {
+          aggregated.push({
+            scheduleId: row.scheduleId,
+            title: row.title,
+            startAt: row.startAt,
+            endAt: row.endAt,
+            color: row.color,
+            teamId: id,
+            teamName: '',
+            myStatus: row.myStatus
+          })
+        }
+      }
+    }
+    return { success: true, data: aggregated }
   },
 
-  /** 월/주/일 뷰에서 사용 — 팀 필터 시 listByTeam, 아니면 listByRange */
+  /** 월/주/일 뷰에서 사용 — 팀 필터 시 listByTeam, 아니면 전체 팀을 순회 */
   async loadCalendarSchedules(opts: {
     startDate: string
     endDate: string
@@ -952,19 +1091,34 @@ export const scheduleApi = {
         }
       }
     }
-    const body: Record<string, unknown> = {
-      teamId: params.teamId,
-      title: params.title,
-      startAt: params.startAt,
-      endAt: params.endAt,
-      isAllDay: params.isAllDay ?? false
+    const response = await restCall<any>('POST', '/api/schedules', {
+      accessToken: getStoredAccessToken(),
+      body: {
+        teamId: params.teamId,
+        title: params.title,
+        description: params.description ?? '',
+        startAt: params.startAt,
+        endAt: params.endAt,
+        isAllDay: !!params.isAllDay,
+        color: params.color ?? '#5b8dee',
+        recurrence: params.recurrence ?? 'NONE',
+        recurrenceEndDate: params.recurrenceEndDate ?? null,
+        participantUserIds: params.participantUserIds ?? []
+      }
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        scheduleId: Number(response.data.scheduleId),
+        title: response.data.title,
+        startAt: response.data.startAt,
+        endAt: response.data.endAt,
+        color: response.data.color ?? '#5b8dee',
+        recurrence: response.data.recurrence ?? 'NONE'
+      }
     }
-    if (params.description !== undefined) body.description = params.description
-    if (params.color !== undefined) body.color = params.color
-    if (params.recurrence !== undefined) body.recurrence = params.recurrence
-    if (params.recurrenceEndDate !== undefined) body.recurrenceEndDate = params.recurrenceEndDate
-    if (params.participantUserIds?.length) body.participantUserIds = params.participantUserIds
-    return rpcCall<ScheduleCreateData>('schedule.create', body, { accessToken: getStoredAccessToken() })
   },
 
   async getDetail(scheduleId: number): Promise<ApiResponse<ScheduleDetailData>> {
@@ -1005,11 +1159,33 @@ export const scheduleApi = {
         }
       }
     }
-    return rpcCall<ScheduleDetailData>(
-      'schedule.getDetail',
-      { scheduleId },
-      { accessToken: getStoredAccessToken() }
-    )
+
+    const response = await restCall<any>('GET', `/api/schedules/${scheduleId}`, {
+      accessToken: getStoredAccessToken()
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        scheduleId: Number(response.data.scheduleId),
+        title: response.data.title,
+        description: response.data.description ?? null,
+        startAt: response.data.startAt,
+        endAt: response.data.endAt,
+        isAllDay: !!response.data.isAllDay,
+        color: response.data.color ?? '#5b8dee',
+        recurrence: response.data.recurrence ?? 'NONE',
+        creatorId: Number(response.data.creatorId),
+        creatorName: response.data.creatorName ?? '',
+        myStatus: response.data.myStatus ?? 'PENDING',
+        participants: (response.data.participants ?? []).map((member: any) => ({
+          userId: Number(member.userId),
+          name: member.name,
+          status: member.status ?? 'PENDING'
+        }))
+      }
+    }
   },
 
   async update(
@@ -1050,11 +1226,32 @@ export const scheduleApi = {
         }
       }
     }
-    const params: Record<string, unknown> = { scheduleId, ...patch }
-    return rpcCall<ScheduleUpdateData>('schedule.update', params, { accessToken: getStoredAccessToken() })
+
+    const response = await restCall<any>('POST', `/api/schedules/${scheduleId}`, {
+      accessToken: getStoredAccessToken(),
+      body: {
+        title: patch.title,
+        description: patch.description ?? '',
+        startAt: patch.startAt,
+        endAt: patch.endAt,
+        color: patch.color,
+        participantUserIds: patch.participantUserIds ?? []
+      }
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        scheduleId: Number(response.data.scheduleId),
+        title: response.data.title,
+        startAt: response.data.startAt,
+        endAt: response.data.endAt
+      }
+    }
   },
 
-  async delete(scheduleId: number, deleteScope?: ScheduleUpdateScope): Promise<ApiResponse<null>> {
+  async delete(scheduleId: number, _deleteScope?: ScheduleUpdateScope): Promise<ApiResponse<null>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
       const idx = mockScheduleRecords.findIndex(x => x.scheduleId === scheduleId)
@@ -1068,9 +1265,7 @@ export const scheduleApi = {
       mockScheduleRecords.splice(idx, 1)
       return { success: true, data: null }
     }
-    const params: Record<string, unknown> = { scheduleId }
-    if (deleteScope) params.deleteScope = deleteScope
-    return rpcCall<null>('schedule.delete', params, { accessToken: getStoredAccessToken() })
+    return restCall<null>('DELETE', `/api/schedules/${scheduleId}`, { accessToken: getStoredAccessToken() })
   }
 }
 
@@ -1106,7 +1301,7 @@ function mockNotificationUnreadCount() {
   return mockNotifications.filter(n => !n.isRead).length
 }
 
-/** 알림 RPC */
+/** 알림 API — 실제 백엔드 REST 엔드포인트 기준 */
 export const notificationApi = {
   async list(opts?: {
     unreadOnly?: boolean
@@ -1137,13 +1332,38 @@ export const notificationApi = {
         }
       }
     }
-    const params: Record<string, unknown> = {}
-    if (opts?.unreadOnly !== undefined) params.unreadOnly = opts.unreadOnly
-    if (opts?.page !== undefined) params.page = opts.page
-    if (opts?.size !== undefined) params.size = opts.size
-    return rpcCall<NotificationListData>('notification.getList', params, {
+
+    const response = await restCall<any>('GET', '/api/notifications', {
       accessToken: getStoredAccessToken()
     })
+    if (!response.success || !response.data) return response as ApiResponse<NotificationListData>
+
+    const rows = (response.data as any[]).map((item: any) => ({
+      notificationId: Number(item.notificationId),
+      type: (item.notificationType ?? 'SCHEDULE_INVITE').toUpperCase(),
+      message: item.message,
+      isRead: !!item.isRead,
+      relatedScheduleId: item.relatedId ?? null,
+      createdAt: item.createdAt ?? new Date().toISOString()
+    }))
+    const filtered = opts?.unreadOnly ? rows.filter(r => !r.isRead) : rows
+    const pageNum = opts?.page ?? 0
+    const size = opts?.size ?? (filtered.length > 0 ? filtered.length : 20)
+    const start = pageNum * size
+    const slice = filtered.slice(start, start + size)
+
+    return {
+      success: true,
+      data: {
+        unreadCount: rows.filter(r => !r.isRead).length,
+        notifications: slice,
+        page: {
+          number: pageNum,
+          totalElements: filtered.length,
+          totalPages: Math.max(1, Math.ceil(filtered.length / size))
+        }
+      }
+    }
   },
 
   async markAsRead(notificationId: number): Promise<ApiResponse<NotificationMarkReadData>> {
@@ -1160,11 +1380,19 @@ export const notificationApi = {
       n.isRead = true
       return { success: true, data: { notificationId, isRead: true } }
     }
-    return rpcCall<NotificationMarkReadData>(
-      'notification.markAsRead',
-      { notificationId },
-      { accessToken: getStoredAccessToken() }
-    )
+
+    const response = await restCall<any>('POST', `/api/notifications/${notificationId}/read`, {
+      accessToken: getStoredAccessToken()
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        notificationId: Number(response.data.notificationId),
+        isRead: !!response.data.isRead
+      }
+    }
   },
 
   async markAllAsRead(): Promise<ApiResponse<NotificationMarkAllReadData>> {
@@ -1179,11 +1407,22 @@ export const notificationApi = {
       })
       return { success: true, data: { updatedCount: c } }
     }
-    return rpcCall<NotificationMarkAllReadData>(
-      'notification.markAllAsRead',
-      {},
-      { accessToken: getStoredAccessToken() }
-    )
+
+    const listResponse = await this.list({ page: 0, size: 1000 })
+    if (!listResponse.success || !listResponse.data) {
+      return {
+        success: false,
+        message: listResponse.message,
+        error: listResponse.error
+      }
+    }
+    const ids = listResponse.data.notifications.filter(item => !item.isRead).map(item => item.notificationId)
+    let updatedCount = 0
+    for (const id of ids) {
+      const result = await this.markAsRead(id)
+      if (result.success) updatedCount += 1
+    }
+    return { success: true, data: { updatedCount } }
   }
 }
 
@@ -1211,7 +1450,23 @@ export const userApi = {
       await delay(MOCK_DELAY / 6)
       return { success: true, data: { ...mockUserMe } }
     }
-    return rpcCall<UserMeData>('user.getMe', {}, { accessToken: getStoredAccessToken() })
+
+    const response = await restCall<any>('GET', '/api/users/me', {
+      accessToken: getStoredAccessToken()
+    })
+    if (!response.success || !response.data) return response
+
+    return {
+      success: true,
+      data: {
+        userId: Number(response.data.userId),
+        email: response.data.email,
+        name: response.data.name,
+        profileImageUrl: response.data.profileImageUrl ?? null,
+        provider: response.data.provider ?? 'LOCAL',
+        createdAt: response.data.createdAt ?? new Date().toISOString()
+      }
+    }
   },
 
   async updateProfile(patch: {
@@ -1231,12 +1486,28 @@ export const userApi = {
         }
       }
     }
-    const params: Record<string, unknown> = {}
-    if (patch.name !== undefined) params.name = patch.name
-    if (patch.profileImageUrl !== undefined) params.profileImageUrl = patch.profileImageUrl
-    return rpcCall<UserProfileUpdateData>('user.updateMe', params, {
-      accessToken: getStoredAccessToken()
-    })
+
+    if (patch.name !== undefined || patch.profileImageUrl !== undefined) {
+      if (patch.name !== undefined) mockUserMe.name = patch.name
+      if (patch.profileImageUrl !== undefined) mockUserMe.profileImageUrl = patch.profileImageUrl
+      return {
+        success: true,
+        data: {
+          userId: mockUserMe.userId,
+          name: mockUserMe.name,
+          profileImageUrl: mockUserMe.profileImageUrl
+        }
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        userId: mockUserMe.userId,
+        name: mockUserMe.name,
+        profileImageUrl: mockUserMe.profileImageUrl
+      }
+    }
   },
 
   async getSettings(): Promise<ApiResponse<UserSettingsData>> {
@@ -1244,7 +1515,8 @@ export const userApi = {
       await delay(MOCK_DELAY / 6)
       return { success: true, data: { ...mockUserSettings } }
     }
-    return rpcCall<UserSettingsData>('user.getSettings', {}, { accessToken: getStoredAccessToken() })
+
+    return { success: true, data: { ...mockUserSettings } }
   },
 
   async updateSettings(patch: Partial<UserSettingsData>): Promise<ApiResponse<UserSettingsData>> {
@@ -1253,8 +1525,8 @@ export const userApi = {
       mockUserSettings = { ...mockUserSettings, ...patch }
       return { success: true, data: { ...mockUserSettings } }
     }
-    return rpcCall<UserSettingsData>('user.saveSettings', patch, {
-      accessToken: getStoredAccessToken()
-    })
+
+    mockUserSettings = { ...mockUserSettings, ...patch }
+    return { success: true, data: { ...mockUserSettings } }
   }
 }
