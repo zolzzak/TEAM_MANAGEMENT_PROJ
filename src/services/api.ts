@@ -193,10 +193,55 @@ async function rpcCall<T>(
   }
 }
 
-// 인증 관련 API — RPC action: auth.*
+async function restCall<T>(
+  path: string,
+  init: { body?: unknown; accessToken?: string | null } = {}
+): Promise<ApiResponse<T>> {
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (init.body !== undefined) headers['Content-Type'] = 'application/json'
+  if (init.accessToken) headers.Authorization = `Bearer ${init.accessToken}`
+
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+      body: init.body === undefined ? undefined : JSON.stringify(init.body)
+    })
+    const text = await response.text()
+    let json: unknown
+    try {
+      json = text ? JSON.parse(text) : undefined
+    } catch {
+      return { success: false, message: '응답을 해석할 수 없습니다' }
+    }
+
+    const body = json as {
+      success?: boolean
+      data?: T
+      message?: string
+      error?: RpcErrorBody
+    } | undefined
+
+    if (!response.ok || body?.success === false) {
+      return {
+        success: false,
+        message: body?.error?.message || body?.message || `요청에 실패했습니다 (${response.status})`,
+        error: body?.error
+      }
+    }
+
+    if (body?.success === true) return { success: true, data: body.data }
+    return json === undefined ? { success: true } : { success: true, data: json as T }
+  } catch {
+    return { success: false, message: '서버와 통신할 수 없습니다' }
+  }
+}
+
+// 인증 관련 REST API
 export const authApi = {
   /**
-   * 로그인 — auth.login
+   * 로그인 — POST /api/users/login
    */
   async login(email: string, password: string): Promise<ApiResponse<AuthLoginData>> {
     if (USE_MOCK) {
@@ -230,11 +275,17 @@ export const authApi = {
       }
     }
 
-    return rpcCall<AuthLoginData>('auth.login', { email, password })
+    const response = await restCall<AuthLoginData>('/api/users/login', {
+      body: { email, password }
+    })
+    if (response.data?.user) {
+      response.data.user.profileImageUrl = response.data.user.profileImageUrl ?? null
+    }
+    return response
   },
 
   /**
-   * 회원가입 — auth.signup (params: email, password, name)
+   * 회원가입 — POST /api/users/sign-up
    */
   async register(data: RegisterRequest): Promise<ApiResponse<AuthSignupData>> {
     if (USE_MOCK) {
@@ -270,15 +321,17 @@ export const authApi = {
       }
     }
 
-    return rpcCall<AuthSignupData>('auth.signup', {
-      email: data.email,
-      password: data.password,
-      name: data.name
+    return restCall<AuthSignupData>('/api/users/sign-up', {
+      body: {
+        email: data.email,
+        password: data.password,
+        name: data.name
+      }
     })
   },
 
   /**
-   * 로그아웃 — auth.logout (Bearer + Refresh 쿠키)
+   * 로그아웃 — POST /api/users/logout
    */
   async logout(accessToken: string | null): Promise<ApiResponse<null>> {
     if (USE_MOCK) {
@@ -286,38 +339,24 @@ export const authApi = {
       return { success: true, data: null }
     }
 
-    if (!accessToken) {
-      return { success: true, data: null }
-    }
-
-    return rpcCall<null>('auth.logout', {}, { accessToken })
+    return restCall<null>('/api/users/logout', { accessToken })
   },
 
   /**
-   * 액세스 토큰 갱신 — auth.refresh (Refresh Token: HttpOnly Cookie)
+   * 액세스 토큰 갱신 — POST /api/users/reissue (Refresh Token: HttpOnly Cookie)
    */
-  async refresh(): Promise<ApiResponse<AuthLoginData>> {
+  async refresh(): Promise<ApiResponse<{ accessToken: string }>> {
     if (USE_MOCK) {
       await delay(MOCK_DELAY)
-      const user = mockUsers[0]
-      const uid = Number.parseInt(user.id, 10)
       return {
         success: true,
         data: {
-          accessToken: 'mock-refreshed-token-' + Date.now(),
-          tokenType: 'Bearer',
-          expiresIn: 3600,
-          user: {
-            userId: Number.isFinite(uid) ? uid : 1,
-            email: user.email,
-            name: user.name,
-            profileImageUrl: null
-          }
+          accessToken: 'mock-refreshed-token-' + Date.now()
         }
       }
     }
 
-    return rpcCall<AuthLoginData>('auth.refresh', {})
+    return restCall<{ accessToken: string }>('/api/users/reissue')
   },
 
   /**
@@ -1102,7 +1141,7 @@ export const notificationApi = {
     if (opts?.unreadOnly !== undefined) params.unreadOnly = opts.unreadOnly
     if (opts?.page !== undefined) params.page = opts.page
     if (opts?.size !== undefined) params.size = opts.size
-    return rpcCall<NotificationListData>('notification.list', params, {
+    return rpcCall<NotificationListData>('notification.getList', params, {
       accessToken: getStoredAccessToken()
     })
   },
@@ -1195,7 +1234,7 @@ export const userApi = {
     const params: Record<string, unknown> = {}
     if (patch.name !== undefined) params.name = patch.name
     if (patch.profileImageUrl !== undefined) params.profileImageUrl = patch.profileImageUrl
-    return rpcCall<UserProfileUpdateData>('user.updateProfile', params, {
+    return rpcCall<UserProfileUpdateData>('user.updateMe', params, {
       accessToken: getStoredAccessToken()
     })
   },
@@ -1214,7 +1253,7 @@ export const userApi = {
       mockUserSettings = { ...mockUserSettings, ...patch }
       return { success: true, data: { ...mockUserSettings } }
     }
-    return rpcCall<UserSettingsData>('user.updateSettings', patch, {
+    return rpcCall<UserSettingsData>('user.saveSettings', patch, {
       accessToken: getStoredAccessToken()
     })
   }
