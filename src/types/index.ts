@@ -175,8 +175,10 @@ export interface ScheduleCreateData {
 }
 
 export interface ScheduleDetailParticipant {
+  participantId?: number
   userId: number
   name: string
+  profileImageUrl?: string | null
   status: ParticipationStatus
 }
 
@@ -231,6 +233,14 @@ export interface ScheduleParticipant {
   scheduleId: string
   userId: string
   user: User
+}
+
+export interface ScheduleParticipantApiItem {
+  participantId: number
+  userId: number
+  name: string
+  profileImageUrl: string | null
+  status: ParticipationStatus
 }
 
 /** Notification RPC */

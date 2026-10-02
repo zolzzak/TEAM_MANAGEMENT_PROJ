@@ -19,6 +19,7 @@ import type {
   ScheduleListByRangeItem,
   ScheduleCreateData,
   ScheduleDetailData,
+  ScheduleDetailParticipant,
   ScheduleUpdateData,
   RecurrenceType,
   ScheduleUpdateScope,
@@ -123,6 +124,16 @@ function mapRangeItemToSchedule(row: ScheduleListByRangeItem): Schedule {
     teamName: row.teamName,
     color: row.color,
     myStatus: row.myStatus
+  }
+}
+
+function mapParticipantResponse(item: any): ScheduleDetailParticipant {
+  return {
+    participantId: Number(item.participantId ?? 0),
+    userId: Number(item.userId),
+    name: item.name,
+    profileImageUrl: item.profileImageUrl ?? null,
+    status: (item.status ?? 'PENDING') as ScheduleDetailParticipant['status']
   }
 }
 
@@ -1185,6 +1196,107 @@ export const scheduleApi = {
           status: member.status ?? 'PENDING'
         }))
       }
+    }
+  },
+
+  async addParticipants(scheduleId: number, userIds: number[]): Promise<ApiResponse<ScheduleDetailParticipant[]>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY / 3)
+      const schedule = mockScheduleRecords.find(item => item.scheduleId === scheduleId)
+      if (!schedule) {
+        return {
+          success: false,
+          message: '일정을 찾을 수 없습니다',
+          error: { code: 'E004', message: '일정을 찾을 수 없습니다' }
+        }
+      }
+      const nextParticipants = [...schedule.participantUserIds]
+      for (const userId of userIds) {
+        if (!nextParticipants.includes(userId)) nextParticipants.push(userId)
+      }
+      schedule.participantUserIds = nextParticipants
+      const participants = nextParticipants.map(userId => ({
+        userId,
+        name: mockUsers.find(u => Number(u.id) === userId)?.name ?? `사용자 ${userId}`,
+        status: 'PENDING' as const
+      }))
+      return { success: true, data: participants }
+    }
+
+    const response = await restCall<any[]>('POST', `/api/schedules/${scheduleId}/participants`, {
+      accessToken: getStoredAccessToken(),
+      body: { userIds }
+    })
+    if (!response.success || !response.data) return response as ApiResponse<ScheduleDetailParticipant[]>
+
+    return {
+      success: true,
+      data: response.data.map(mapParticipantResponse)
+    }
+  },
+
+  async getParticipants(scheduleId: number): Promise<ApiResponse<ScheduleDetailParticipant[]>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY / 4)
+      const schedule = mockScheduleRecords.find(item => item.scheduleId === scheduleId)
+      if (!schedule) {
+        return {
+          success: false,
+          message: '일정을 찾을 수 없습니다',
+          error: { code: 'E004', message: '일정을 찾을 수 없습니다' }
+        }
+      }
+      const participants = schedule.participantUserIds.map(userId => ({
+        userId,
+        name: mockUsers.find(u => Number(u.id) === userId)?.name ?? `사용자 ${userId}`,
+        status: 'PENDING' as const
+      }))
+      return { success: true, data: participants }
+    }
+
+    const response = await restCall<any[]>('GET', `/api/schedules/${scheduleId}/participants`, {
+      accessToken: getStoredAccessToken()
+    })
+    if (!response.success || !response.data) return response as ApiResponse<ScheduleDetailParticipant[]>
+
+    return {
+      success: true,
+      data: response.data.map(mapParticipantResponse)
+    }
+  },
+
+  async updateMyParticipantStatus(
+    scheduleId: number,
+    status: 'PENDING' | 'ACCEPTED' | 'DECLINED'
+  ): Promise<ApiResponse<ScheduleDetailParticipant>> {
+    if (USE_MOCK) {
+      await delay(MOCK_DELAY / 5)
+      const schedule = mockScheduleRecords.find(item => item.scheduleId === scheduleId)
+      if (!schedule) {
+        return {
+          success: false,
+          message: '일정을 찾을 수 없습니다',
+          error: { code: 'E004', message: '일정을 찾을 수 없습니다' }
+        }
+      }
+      const userId = getCurrentUserId()
+      const participant = {
+        userId,
+        name: mockUsers.find(u => Number(u.id) === userId)?.name ?? `사용자 ${userId}`,
+        status
+      }
+      return { success: true, data: participant }
+    }
+
+    const response = await restCall<any>('POST', `/api/schedules/${scheduleId}/participants/me`, {
+      accessToken: getStoredAccessToken(),
+      body: { status }
+    })
+    if (!response.success || !response.data) return response as ApiResponse<ScheduleDetailParticipant>
+
+    return {
+      success: true,
+      data: mapParticipantResponse(response.data)
     }
   },
 
